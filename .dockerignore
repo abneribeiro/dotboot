@@ -1,0 +1,12 @@
+# Variáveis de ambiente (contém o token secreto)
+.env
+
+# Git
+.git
+.gitignore
+
+# Binário compilado localmente
+dotboot
+
+# Documentação
+*.md
