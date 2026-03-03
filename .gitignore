@@ -6,3 +6,7 @@ dotboot
 
 # Docker
 docker-compose.override.yml
+
+# Air live reload (desenvolvimento)
+tmp/
+build-errors.log

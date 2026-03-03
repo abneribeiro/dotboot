@@ -1,0 +1,42 @@
+services:
+  videobot-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    env_file: .env
+    volumes:
+      # Mount source code for live reload
+      - .:/app
+      # Cache Go modules to avoid re-downloading on every restart
+      - go-modules:/go/pkg/mod
+    working_dir: /app
+    networks:
+      - dotboot_network
+    # Remove resource limits for development
+    ports:
+      # Optional: expose a debug port if needed
+      - "2345:2345"
+    # Override healthcheck for development (Air process)
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "air"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Improved logging for development
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  go-modules:
+
+networks:
+  dotboot_network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.driver.mtu: "1500"

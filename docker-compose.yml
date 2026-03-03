@@ -3,3 +3,27 @@ services:
     build: .
     env_file: .env
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "/dotboot"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - dotboot_network
+    # Resource limits to prevent excessive memory/CPU usage
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    # Improved logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  dotboot_network:
+    driver: bridge
