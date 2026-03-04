@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -161,11 +162,42 @@ func registerCommandWithRetry(dg *discordgo.Session) (*discordgo.ApplicationComm
 	return nil, fmt.Errorf("falhou ao registar comando após %d tentativas: %v", maxRetries, lastErr)
 }
 
+func validateEnvironment() error {
+	// Check required environment variables
+	token := os.Getenv("DISCORD_TOKEN")
+	if token == "" {
+		return fmt.Errorf("DISCORD_TOKEN environment variable is not set")
+	}
+
+	// Validate token format (Discord bot tokens start with specific prefixes)
+	if !strings.HasPrefix(token, "Bot ") && !strings.HasPrefix(token, "MTQ") && !strings.HasPrefix(token, "MTE") && !strings.HasPrefix(token, "MTI") {
+		log.Println("Warning: Discord token format may be invalid")
+	}
+
+	// Check if yt-dlp is available
+	if _, err := exec.LookPath("yt-dlp"); err != nil {
+		return fmt.Errorf("yt-dlp not found in PATH: %w", err)
+	}
+
+	// Check if ffmpeg is available
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return fmt.Errorf("ffmpeg not found in PATH: %w", err)
+	}
+
+	log.Println("Environment validation successful")
+	return nil
+}
+
 func main() {
 	// Carrega variáveis de ambiente do ficheiro .env (se existir).
 	// Não retorna erro se o ficheiro não existir, permitindo usar
 	// variáveis de ambiente do sistema em produção.
 	_ = godotenv.Load()
+
+	// Validate environment variables and dependencies
+	if err := validateEnvironment(); err != nil {
+		log.Fatalf("Environment validation failed: %v", err)
+	}
 
 	// Carrega o token do bot a partir da variável de ambiente DISCORD_TOKEN.
 	token := os.Getenv("DISCORD_TOKEN")

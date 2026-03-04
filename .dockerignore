@@ -1,12 +1,49 @@
-# Variáveis de ambiente (contém o token secreto)
+# Environment files (contain secrets)
 .env
+.env.*
 
-# Git
+# Git and version control
 .git
 .gitignore
 
-# Binário compilado localmente
+# Compiled binaries
 dotboot
+*.exe
+*.dll
+*.so
+*.dylib
 
-# Documentação
+# Documentation
 *.md
+
+# Development files (now removed)
+# These files no longer exist but kept for reference
+# .air.toml
+# Dockerfile.dev
+# docker-compose.dev.yml
+
+# Temporary files
+tmp/
+*.tmp
+*.log
+build-errors.log
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files (to avoid recursive copying)
+Dockerfile*
+docker-compose*.yml
+
+# Go build artifacts
+vendor/
+*.test
+*.prof

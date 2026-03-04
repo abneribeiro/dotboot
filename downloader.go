@@ -125,6 +125,8 @@ func validateAndProcessVideo(filePath string) (string, error) {
 // Devolve o caminho completo do ficheiro descarregado ou um erro.
 // O chamador é responsável por eliminar o ficheiro após a utilização.
 func DownloadVideo(url string, startTime string, endTime string) (string, error) {
+	log.Printf("Starting download for URL: %s (start: %s, end: %s)", url, startTime, endTime)
+
 	// Gera um nome de ficheiro único usando um timestamp com nanossegundos
 	// para evitar colisões entre goroutines concorrentes.
 	uniqueID := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -149,6 +151,8 @@ func DownloadVideo(url string, startTime string, endTime string) (string, error)
 		"--merge-output-format", "mp4",
 		"--no-playlist",
 		"-o", outputTemplate,
+		"--no-warnings",  // Reduce noise in logs
+		"--quiet",        // Only show errors
 	}
 
 	// Se startTime e endTime forem fornecidos, adiciona a flag de recorte.
@@ -157,6 +161,7 @@ func DownloadVideo(url string, startTime string, endTime string) (string, error)
 	if startTime != "" && endTime != "" {
 		section := fmt.Sprintf("*%s-%s", startTime, endTime)
 		args = append(args, "--download-sections", section, "--force-keyframes-at-cuts")
+		log.Printf("Adding video section: %s", section)
 	}
 
 	// O URL é sempre o último argumento.
@@ -169,16 +174,29 @@ func DownloadVideo(url string, startTime string, endTime string) (string, error)
 	outputStr := string(output)
 
 	if err != nil {
-		log.Printf("yt-dlp output:\n%s", outputStr)
-
-		// Tratamento de erros específicos para lives sem suporte DVR.
-		if strings.Contains(outputStr, "does not allow DVR") ||
-			strings.Contains(outputStr, "is not a video") ||
-			strings.Contains(outputStr, "This live event will begin") {
-			return "", fmt.Errorf("esta live não suporta DVR ou ainda não começou; não é possível fazer o recorte")
+		log.Printf("yt-dlp failed with error: %v", err)
+		if len(outputStr) > 0 {
+			log.Printf("yt-dlp output:\n%s", outputStr)
 		}
 
-		return "", fmt.Errorf("yt-dlp falhou: %w", err)
+		// Enhanced error handling for common issues
+		outputLower := strings.ToLower(outputStr)
+		switch {
+		case strings.Contains(outputLower, "does not allow dvr") ||
+			 strings.Contains(outputLower, "is not a video") ||
+			 strings.Contains(outputLower, "this live event will begin"):
+			return "", fmt.Errorf("esta live não suporta DVR ou ainda não começou; não é possível fazer o recorte")
+		case strings.Contains(outputLower, "private video"):
+			return "", fmt.Errorf("vídeo privado ou indisponível")
+		case strings.Contains(outputLower, "video unavailable"):
+			return "", fmt.Errorf("vídeo indisponível ou removido")
+		case strings.Contains(outputLower, "unsupported url"):
+			return "", fmt.Errorf("URL não suportado pelo yt-dlp")
+		case ctx.Err() == context.DeadlineExceeded:
+			return "", fmt.Errorf("timeout durante o download (>%v)", downloadTimeout)
+		default:
+			return "", fmt.Errorf("yt-dlp falhou: %w", err)
+		}
 	}
 
 	// Após a execução, resolve o caminho real do ficheiro.

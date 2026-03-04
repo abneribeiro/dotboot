@@ -27,6 +27,10 @@ func InteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
+	// Log interaction details for monitoring
+	log.Printf("[%s] Interaction received from user %s in guild %s",
+		i.ID, i.Member.User.Username, i.GuildID)
+
 	// Extrai as opções do comando.
 	options := i.ApplicationCommandData().Options
 	optionMap := make(map[string]*discordgo.ApplicationCommandInteractionDataOption, len(options))
@@ -36,6 +40,12 @@ func InteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	// Extrai o URL (obrigatório).
 	url := optionMap["url"].StringValue()
+
+	// Basic URL validation
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		respondWithError(s, i, "❌ URL inválido. Usa um link completo (ex: https://youtube.com/...)")
+		return
+	}
 
 	// Extrai os tempos de início e fim (opcionais).
 	var startTime, endTime string
