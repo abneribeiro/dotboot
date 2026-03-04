@@ -45,20 +45,20 @@ var command = &discordgo.ApplicationCommand{
 }
 
 const (
-	maxRetries      = 5
-	baseRetryDelay  = time.Second
-	maxRetryDelay   = 60 * time.Second
-	connectTimeout  = 30 * time.Second
-	requestTimeout  = 30 * time.Second
+	maxRetries     = 5
+	baseRetryDelay = time.Second
+	maxRetryDelay  = 60 * time.Second
+	connectTimeout = 30 * time.Second
+	requestTimeout = 30 * time.Second
 )
 
 // createCustomHTTPClient creates an HTTP client optimized for Discord connections
 func createCustomHTTPClient() *http.Client {
 	transport := &http.Transport{
-		Dial: (&net.Dialer{
+		DialContext: (&net.Dialer{
 			Timeout:   connectTimeout,
 			KeepAlive: 30 * time.Second,
-		}).Dial,
+		}).DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: requestTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -81,11 +81,11 @@ func isNetworkError(err error) bool {
 
 	errStr := strings.ToLower(err.Error())
 	return strings.Contains(errStr, "timeout") ||
-		   strings.Contains(errStr, "connection refused") ||
-		   strings.Contains(errStr, "connection reset") ||
-		   strings.Contains(errStr, "tls handshake timeout") ||
-		   strings.Contains(errStr, "dial") ||
-		   strings.Contains(errStr, "no such host")
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "tls handshake timeout") ||
+		strings.Contains(errStr, "dial") ||
+		strings.Contains(errStr, "no such host")
 }
 
 // exponentialBackoff calculates delay with exponential backoff and jitter

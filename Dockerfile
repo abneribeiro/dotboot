@@ -49,7 +49,7 @@ RUN apk add --no-cache \
     curl
 
 # Instala a versão mais recente do yt-dlp
-RUN pip3 install --no-cache-dir -U yt-dlp
+RUN pip3 install --no-cache-dir --break-system-packages -U yt-dlp
 
 # Instala Air para live reload
 RUN curl -sSfL https://raw.githubusercontent.com/cosmtrek/air/master/install.sh | sh -s -- -b $(go env GOPATH)/bin

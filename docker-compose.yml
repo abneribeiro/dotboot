@@ -3,16 +3,16 @@ services:
     build:
       context: .
       target: production
+      network: host
     env_file: .env
     restart: unless-stopped
+    network_mode: host
     healthcheck:
       test: ["CMD", "pgrep", "-f", "/dotboot"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    networks:
-      - dotboot_network
     # Resource limits to prevent excessive memory/CPU usage
     deploy:
       resources:
@@ -31,18 +31,15 @@ services:
     build:
       context: .
       target: development
+      network: host
     env_file: .env
+    network_mode: host
     volumes:
       # Mount source code for live reload
       - .:/app
       # Cache Go modules to avoid re-downloading on every restart
       - go-modules:/go/pkg/mod
     working_dir: /app
-    networks:
-      - dotboot_network
-    ports:
-      # Optional: expose a debug port if needed
-      - "2345:2345"
     # Override healthcheck for development (Air process)
     healthcheck:
       test: ["CMD", "pgrep", "-f", "air"]
@@ -59,7 +56,3 @@ services:
 
 volumes:
   go-modules:
-
-networks:
-  dotboot_network:
-    driver: bridge
