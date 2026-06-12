@@ -25,8 +25,9 @@ FROM base AS builder
 # Copia o código-fonte e compila o binário estático.
 # CGO_ENABLED=0 garante um binário sem dependências de C,
 # compatível com qualquer imagem Linux.
-COPY *.go ./
-RUN CGO_ENABLED=0 go build -o /dotboot .
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+RUN CGO_ENABLED=0 go build -o /dotboot ./cmd/dotboot
 
 # ============================================================
 # Development stage: Live reload with Air
@@ -62,8 +63,9 @@ ENV PATH="$PATH:$(go env GOPATH)/bin"
 
 # Comando padrão: executa Air para live reload com configuração inline
 CMD ["air", \
-  "--build.cmd", "go build -o ./tmp/main .", \
+  "--build.cmd", "go build -o ./tmp/main ./cmd/dotboot", \
   "--build.bin", "./tmp/main", \
+  "--build.args_bin", "bot", \
   "--build.delay", "1000", \
   "--build.exclude_dir", "tmp", \
   "--build.include_ext", "go", \
@@ -100,5 +102,7 @@ COPY --from=builder /dotboot /dotboot
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD pgrep -f dotboot > /dev/null || exit 1
 
-# Define o comando de arranque.
+# Define o comando de arranque. O CMD é o subcomando por omissão e pode
+# ser substituído, ex: docker run dotboot download -o /videos <url>
 ENTRYPOINT ["/dotboot"]
+CMD ["bot"]

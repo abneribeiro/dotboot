@@ -1,8 +1,8 @@
 # Variáveis de ambiente (contém o token secreto do bot)
 .env
 
-# Binário compilado
-dotboot
+# Binário compilado (apenas na raiz; não apanhar cmd/dotboot/)
+/dotboot
 
 # Docker
 docker-compose.override.yml
