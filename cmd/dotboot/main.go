@@ -34,6 +34,8 @@ Flags de download (têm de vir antes dos URLs):
   -o DIR        Diretório de saída; relativo é resolvido sob $DOTBOOT_OUTPUT_DIR
                 quando definido (default: $DOTBOOT_OUTPUT_DIR ou o diretório atual)
   -a FICHEIRO   Ficheiro com um URL por linha
+  -q QUALIDADE  Qualidade do vídeo: best (default) ou altura máxima em pixels
+                (ex: 1080, 720, 480)
   -start TEMPO  Início do recorte, MM:SS ou HH:MM:SS (exige -end e um único URL)
   -end TEMPO    Fim do recorte
 
@@ -41,6 +43,7 @@ Exemplos:
   dotboot download https://youtube.com/watch?v=xxxx
   dotboot download -o ~/Videos https://youtube.com/playlist?list=yyyy
   dotboot download -a urls.txt -o ~/Videos
+  dotboot download -q 720 -o aulas https://youtube.com/watch?v=xxxx
 
 Re-executar "download" com o mesmo diretório salta os vídeos já descarregados
 (registados em .dotboot-archive.txt) e retoma downloads interrompidos.

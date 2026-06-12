@@ -13,7 +13,8 @@ Bot de Discord escrito em Go que descarrega vídeos de redes sociais (YouTube, X
 - 🛑 Encerramento gracioso: downloads em curso terminam antes do shutdown
 
 ### Modo CLI (`dotboot download`)
-- 🎞️ Melhor qualidade disponível — sem limite de 25MB nem compressão
+- 🎞️ Melhor qualidade disponível por omissão — sem limite de 25MB nem
+  compressão; a flag `-q` limita a resolução quando quiseres (ex: `-q 720`)
 - 📜 Playlists e canais inteiros num só comando
 - 📄 Ficheiro de URLs (`-a urls.txt`) e vários URLs de uma vez
 - ⏯️ **Continuar**: re-executar o mesmo comando salta vídeos já descarregados
@@ -94,6 +95,9 @@ dotboot download -o ~/Videos https://youtube.com/playlist?list=yyyy
 
 # Ficheiro com um URL por linha
 dotboot download -a urls.txt -o ~/Videos
+
+# Limitar a qualidade (sem -q descarrega sempre a melhor disponível)
+dotboot download -q 720 -o aulas https://youtube.com/watch?v=xxxx
 
 # Recorte de um vídeo (um único URL)
 dotboot download -start 01:30 -end 02:00 https://x.com/user/status/123

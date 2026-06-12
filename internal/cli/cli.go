@@ -28,6 +28,8 @@ Flags:
   -o DIR        Diretório de saída; relativo é resolvido sob $DOTBOOT_OUTPUT_DIR
                 quando definido (default: $DOTBOOT_OUTPUT_DIR ou o diretório atual)
   -a FICHEIRO   Ficheiro com um URL por linha
+  -q QUALIDADE  Qualidade do vídeo: best (default) ou altura máxima em pixels
+                (ex: 1080, 720, 480)
   -start TEMPO  Início do recorte, MM:SS ou HH:MM:SS (exige -end e um único URL)
   -end TEMPO    Fim do recorte
 
@@ -35,16 +37,18 @@ Exemplos:
   dotboot download https://youtube.com/watch?v=xxxx
   dotboot download -o ~/Videos https://youtube.com/playlist?list=yyyy
   dotboot download -a urls.txt -o ~/Videos
+  dotboot download -q 720 -o aulas https://youtube.com/watch?v=xxxx
   dotboot download -start 01:30 -end 02:00 https://x.com/user/status/123
 `
 
 // options é o resultado validado do parsing dos argumentos.
 type options struct {
-	outputDir string
-	batchFile string
-	start     string
-	end       string
-	urls      []string
+	outputDir  string
+	batchFile  string
+	formatSort string // valor de -S do yt-dlp já traduzido; vazio = melhor qualidade
+	start      string
+	end        string
+	urls       []string
 }
 
 // parseArgs interpreta e valida os argumentos do subcomando download.
@@ -57,8 +61,10 @@ func parseArgs(args []string, defaultOutputDir string) (*options, error) {
 
 	fs := flag.NewFlagSet("download", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(fs.Output(), usageText) }
+	var quality string
 	fs.StringVar(&o.outputDir, "o", "", "diretório de saída")
 	fs.StringVar(&o.batchFile, "a", "", "ficheiro com um URL por linha")
+	fs.StringVar(&quality, "q", "", "qualidade do vídeo: best ou altura em pixels")
 	fs.StringVar(&o.start, "start", "", "tempo de início do recorte")
 	fs.StringVar(&o.end, "end", "", "tempo de fim do recorte")
 
@@ -66,6 +72,12 @@ func parseArgs(args []string, defaultOutputDir string) (*options, error) {
 		return nil, err
 	}
 	o.urls = fs.Args()
+
+	sort, err := downloader.SortForQuality(quality)
+	if err != nil {
+		return nil, fmt.Errorf("-q: %w", err)
+	}
+	o.formatSort = sort
 
 	if o.outputDir == "" {
 		o.outputDir = defaultOutputDir
@@ -127,6 +139,7 @@ func Run(ctx context.Context, args []string, cfg *config.Config, log *slog.Logge
 	opts := downloader.Options{
 		URLs:           o.urls,
 		BatchFile:      o.batchFile,
+		FormatSort:     o.formatSort,
 		OutputTemplate: filepath.Join(o.outputDir, "%(title)s [%(id)s].%(ext)s"),
 		Continue:       true,
 		IgnoreErrors:   true,

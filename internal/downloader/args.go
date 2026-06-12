@@ -3,6 +3,7 @@ package downloader
 import (
 	"fmt"
 	"io"
+	"strconv"
 )
 
 // Section define um recorte de vídeo com tempos de início e fim nos formatos
@@ -26,6 +27,10 @@ type Options struct {
 
 	// Format é o valor de -f; vazio omite a flag (default do yt-dlp = melhor qualidade).
 	Format string
+
+	// FormatSort é o valor de -S/--format-sort (ver SortForQuality);
+	// vazio omite a flag.
+	FormatSort string
 
 	// NoPlaylist impede o download de playlists inteiras quando o link
 	// aponta para um vídeo dentro de uma playlist (sempre no bot;
@@ -58,6 +63,23 @@ type Options struct {
 	Stderr io.Writer
 }
 
+// SortForQuality traduz uma qualidade pedida no CLI num valor de --format-sort
+// (-S) do yt-dlp. "" ou "best" devolvem "" (sem -S; o default do yt-dlp é a
+// melhor qualidade). Um inteiro (ex: "1080", "720") prefere a melhor qualidade
+// até essa altura. Usa-se -S em vez de um filtro -f porque sites que não
+// expõem a altura dos formatos (ex: Instagram) fariam um filtro falhar;
+// a ordenação escolhe sempre o formato disponível mais próximo do pedido.
+func SortForQuality(q string) (string, error) {
+	if q == "" || q == "best" {
+		return "", nil
+	}
+	n, err := strconv.Atoi(q)
+	if err != nil || n < 1 {
+		return "", fmt.Errorf("qualidade inválida: %q (usa \"best\" ou uma altura em pixels, ex: 1080, 720)", q)
+	}
+	return fmt.Sprintf("res:%d", n), nil
+}
+
 // BuildArgs constrói a lista de argumentos do yt-dlp a partir das opções.
 // É uma função pura para ser testável sem executar o yt-dlp.
 func BuildArgs(o Options) []string {
@@ -65,6 +87,9 @@ func BuildArgs(o Options) []string {
 
 	if o.Format != "" {
 		args = append(args, "-f", o.Format)
+	}
+	if o.FormatSort != "" {
+		args = append(args, "-S", o.FormatSort)
 	}
 	if o.MergeFormat != "" {
 		args = append(args, "--merge-output-format", o.MergeFormat)

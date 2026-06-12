@@ -51,6 +51,9 @@ func TestParseArgsValidation(t *testing.T) {
 		{"recorte com dois URLs", []string{"-start", "01:00", "-end", "02:00", "https://youtu.be/a", "https://youtu.be/b"}, true},
 		{"recorte com batch-file", []string{"-start", "01:00", "-end", "02:00", "-a", "urls.txt"}, true},
 		{"tempo de recorte inválido", []string{"-start", "abc", "-end", "02:00", "https://youtu.be/a"}, true},
+		{"qualidade por altura é aceite", []string{"-q", "720", "https://youtu.be/a"}, false},
+		{"qualidade best é aceite", []string{"-q", "best", "https://youtu.be/a"}, false},
+		{"qualidade inválida", []string{"-q", "abc", "https://youtu.be/a"}, true},
 		{"flag desconhecida", []string{"-formato", "mp4", "https://youtu.be/a"}, true},
 	}
 
@@ -61,6 +64,26 @@ func TestParseArgsValidation(t *testing.T) {
 				t.Errorf("parseArgs(%v) err = %v, wantErr = %v", tt.args, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestParseArgsQualitySort(t *testing.T) {
+	// Sem -q, a ordenação fica vazia (yt-dlp usa a melhor qualidade).
+	o, err := parseArgs([]string{"https://youtu.be/abc"}, "")
+	if err != nil {
+		t.Fatalf("parseArgs devolveu erro inesperado: %v", err)
+	}
+	if o.formatSort != "" {
+		t.Errorf("formatSort = %q, esperado vazio sem -q", o.formatSort)
+	}
+
+	// -q 720 traduz-se na ordenação por resolução preferida.
+	o, err = parseArgs([]string{"-q", "720", "https://youtu.be/abc"}, "")
+	if err != nil {
+		t.Fatalf("parseArgs devolveu erro inesperado: %v", err)
+	}
+	if o.formatSort != "res:720" {
+		t.Errorf("formatSort = %q, esperado res:720", o.formatSort)
 	}
 }
 
