@@ -17,9 +17,17 @@ type Config struct {
 	// DiscordToken é exigido apenas pelo subcomando bot (DISCORD_TOKEN).
 	DiscordToken string
 
-	// MaxFileSizeMB define o limite de upload do Discord em megabytes
-	// (DOTBOOT_MAX_FILE_SIZE_MB, default 25). Não se aplica ao modo CLI.
+	// MaxFileSizeMB é um teto opcional para o upload do bot, em megabytes
+	// (DOTBOOT_MAX_FILE_SIZE_MB). Zero — o default — significa "sem teto":
+	// o limite é o que o Discord permite no servidor onde o comando corre
+	// (ver internal/bot/limits.go). Um valor definido nunca aumenta esse
+	// limite, apenas o baixa. Não se aplica ao modo CLI.
 	MaxFileSizeMB int
+
+	// GuildID, quando definido (DOTBOOT_GUILD_ID), regista o comando apenas
+	// nesse servidor, com propagação instantânea — útil em desenvolvimento.
+	// Vazio regista globalmente (propagação até 1 hora).
+	GuildID string
 
 	// DownloadTimeout limita cada download do bot (DOTBOOT_DOWNLOAD_TIMEOUT,
 	// default 10m, sintaxe de time.ParseDuration). Não se aplica ao modo CLI.
@@ -46,11 +54,6 @@ type Config struct {
 	LogLevel slog.Level
 }
 
-// MaxFileSizeBytes devolve o limite de upload em bytes.
-func (c *Config) MaxFileSizeBytes() int64 {
-	return int64(c.MaxFileSizeMB) * 1024 * 1024
-}
-
 // Load lê a configuração a partir do ambiente do processo.
 func Load() (*Config, error) {
 	return loadFrom(os.Getenv)
@@ -60,7 +63,8 @@ func Load() (*Config, error) {
 func loadFrom(getenv func(string) string) (*Config, error) {
 	cfg := &Config{
 		DiscordToken:    getenv("DISCORD_TOKEN"),
-		MaxFileSizeMB:   25,
+		GuildID:         getenv("DOTBOOT_GUILD_ID"),
+		MaxFileSizeMB:   0,
 		DownloadTimeout: 10 * time.Minute,
 		MaxConcurrent:   3,
 		ShutdownGrace:   30 * time.Second,
@@ -72,7 +76,7 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 	if v := getenv("DOTBOOT_MAX_FILE_SIZE_MB"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
-			return nil, fmt.Errorf("DOTBOOT_MAX_FILE_SIZE_MB inválido: %q (usa um inteiro >= 1)", v)
+			return nil, fmt.Errorf("DOTBOOT_MAX_FILE_SIZE_MB inválido: %q (usa um inteiro >= 1, ou remove a variável para usar o limite do servidor)", v)
 		}
 		cfg.MaxFileSizeMB = n
 	}

@@ -2,25 +2,34 @@ package downloader
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
 func TestBuildArgsBotMode(t *testing.T) {
 	got := BuildArgs(Options{
-		URLs:           []string{"https://youtu.be/abc"},
-		OutputTemplate: "/tmp/dotboot_123.%(ext)s",
-		Format:         "best[filesize<25M]/best",
-		NoPlaylist:     true,
-		MergeFormat:    "mp4",
-		Quiet:          true,
+		URLs:              []string{"https://youtu.be/abc"},
+		OutputTemplate:    "/tmp/dotboot_123.%(ext)s",
+		Format:            "bv*+ba/b",
+		FormatSort:        "res:720",
+		MaxFileSize:       500 * 1024 * 1024,
+		RestrictFilenames: true,
+		PrintToFile:       "/tmp/work/final.path",
+		NoPlaylist:        true,
+		MergeFormat:       "mp4",
+		Quiet:             true,
 	})
 
 	want := []string{
-		"-f", "best[filesize<25M]/best",
+		"-f", "bv*+ba/b",
+		"-S", "res:720",
 		"--merge-output-format", "mp4",
+		"--max-filesize", "524288000",
+		"--restrict-filenames",
 		"--no-playlist",
 		"-o", "/tmp/dotboot_123.%(ext)s",
 		"--no-warnings", "--quiet",
+		"--print-to-file", "after_move:filepath", "/tmp/work/final.path", "--no-simulate",
 		"https://youtu.be/abc",
 	}
 	if !slices.Equal(got, want) {
@@ -32,7 +41,7 @@ func TestBuildArgsBotModeWithSection(t *testing.T) {
 	got := BuildArgs(Options{
 		URLs:           []string{"https://youtu.be/abc"},
 		OutputTemplate: "/tmp/dotboot_123.%(ext)s",
-		Format:         "best[filesize<50M]/best",
+		Format:         "bv*+ba/b",
 		NoPlaylist:     true,
 		MergeFormat:    "mp4",
 		Quiet:          true,
@@ -40,7 +49,7 @@ func TestBuildArgsBotModeWithSection(t *testing.T) {
 	})
 
 	want := []string{
-		"-f", "best[filesize<50M]/best",
+		"-f", "bv*+ba/b",
 		"--merge-output-format", "mp4",
 		"--no-playlist",
 		"-o", "/tmp/dotboot_123.%(ext)s",
@@ -128,32 +137,81 @@ func TestBuildArgsCLIModeWithSection(t *testing.T) {
 	}
 }
 
-func TestSortForQuality(t *testing.T) {
+func TestQualitySelectors(t *testing.T) {
 	tests := []struct {
-		name    string
-		q       string
-		want    string
-		wantErr bool
+		name       string
+		q          string
+		wantFormat string
+		wantSort   string
+		wantErr    bool
 	}{
-		{"vazio é melhor qualidade (sem -S)", "", "", false},
-		{"best é melhor qualidade (sem -S)", "best", "", false},
-		{"altura prefere até 720", "720", "res:720", false},
-		{"altura 1080", "1080", "res:1080", false},
-		{"texto inválido", "abc", "", true},
-		{"zero inválido", "0", "", true},
-		{"negativo inválido", "-720", "", true},
+		{"vazio é melhor qualidade", "", "", "", false},
+		{"best é melhor qualidade", "best", "", "", false},
+		{"altura limita a 720", "720", "bv*[height<=?720]+ba/b[height<=?720]/bv*+ba/b", "res:720", false},
+		{"altura 1080", "1080", "bv*[height<=?1080]+ba/b[height<=?1080]/bv*+ba/b", "res:1080", false},
+		{"texto inválido", "abc", "", "", true},
+		{"zero inválido", "0", "", "", true},
+		{"negativo inválido", "-720", "", "", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := SortForQuality(tt.q)
+			format, sort, err := QualitySelectors(tt.q)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("SortForQuality(%q) err = %v, wantErr = %v", tt.q, err, tt.wantErr)
+				t.Fatalf("QualitySelectors(%q) err = %v, wantErr = %v", tt.q, err, tt.wantErr)
 			}
-			if got != tt.want {
-				t.Errorf("SortForQuality(%q) = %q, esperado %q", tt.q, got, tt.want)
+			if format != tt.wantFormat {
+				t.Errorf("QualitySelectors(%q) format = %q, esperado %q", tt.q, format, tt.wantFormat)
+			}
+			if sort != tt.wantSort {
+				t.Errorf("QualitySelectors(%q) sort = %q, esperado %q", tt.q, sort, tt.wantSort)
 			}
 		})
+	}
+}
+
+// O "?" é o que impede o limite de altura de excluir sites que não expõem a
+// resolução dos formatos (ex: Instagram) — sem ele o -q partia esses sites.
+func TestQualitySelectorsToleraAlturaDesconhecida(t *testing.T) {
+	format, _, err := QualitySelectors("720")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if !strings.Contains(format, "height<=?720") {
+		t.Errorf("o filtro devia usar height<=?720 (com ?): %q", format)
+	}
+	if !strings.HasSuffix(format, "/bv*+ba/b") {
+		t.Errorf("o formato devia terminar num fallback sem limite: %q", format)
+	}
+}
+
+func TestSortForBudget(t *testing.T) {
+	tests := []struct {
+		name string
+		size int64
+		want string
+	}{
+		{"limite gratuito prefere 720", 20 * 1024 * 1024, "res:720"},
+		{"boost nível 2 prefere 1080", 50 * 1024 * 1024, "res:1080"},
+		{"boost nível 3 prefere 1080", 100 * 1024 * 1024, "res:1080"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sortForBudget(tt.size); got != tt.want {
+				t.Errorf("sortForBudget(%d) = %q, esperado %q", tt.size, got, tt.want)
+			}
+		})
+	}
+}
+
+// O --max-filesize é um travão de sanidade, não o limite de upload: tem de
+// ficar bem acima dele, senão os vídeos grandes eram rejeitados em vez de
+// comprimidos.
+func TestDownloadCapDeixaMargemParaCompressao(t *testing.T) {
+	for _, limit := range []int64{20 * 1024 * 1024, 100 * 1024 * 1024} {
+		if got := downloadCap(limit); got <= limit*10 {
+			t.Errorf("downloadCap(%d) = %d, demasiado perto do limite de upload", limit, got)
+		}
 	}
 }
 

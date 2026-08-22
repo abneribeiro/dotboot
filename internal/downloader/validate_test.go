@@ -46,3 +46,30 @@ func TestValidateURL(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		start   string
+		end     string
+		wantErr bool
+	}{
+		{"intervalo normal", "01:00", "02:00", false},
+		{"com horas", "00:01:00", "01:00:00", false},
+		{"mistura de formatos", "59:00", "01:00:00", false},
+		{"início igual ao fim", "01:00", "01:00", true},
+		{"início depois do fim", "02:00", "01:00", true},
+		{"início depois do fim com horas", "01:00:00", "00:30:00", true},
+		{"formato inválido no início", "abc", "02:00", true},
+		{"formato inválido no fim", "01:00", "xyz", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRange(tt.start, tt.end)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateRange(%q, %q) = %v, wantErr = %v", tt.start, tt.end, err, tt.wantErr)
+			}
+		})
+	}
+}

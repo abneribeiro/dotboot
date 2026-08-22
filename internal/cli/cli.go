@@ -5,15 +5,35 @@
 package cli
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"dotboot/internal/config"
 	"dotboot/internal/downloader"
+)
+
+var (
+	// errHelp sinaliza que o utilizador pediu a ajuda. Pedir ajuda não é um
+	// erro: o Run imprime o texto e devolve nil, para o processo sair a 0.
+	errHelp = errors.New("ajuda pedida")
+
+	// ErrUsage sinaliza argumentos inválidos já reportados ao utilizador.
+	// O main sai com código 2 sem voltar a imprimir a mensagem.
+	ErrUsage = errors.New("argumentos inválidos")
+
+	// ErrPartial sinaliza que parte dos downloads terminou e parte falhou —
+	// o normal numa playlist com um vídeo privado pelo meio. Já foi
+	// reportado ao utilizador; o main apenas ajusta o código de saída.
+	ErrPartial = errors.New("alguns downloads falharam")
 )
 
 // archiveFileName regista os vídeos já descarregados no diretório de saída;
@@ -43,9 +63,12 @@ Exemplos:
 
 // options é o resultado validado do parsing dos argumentos.
 type options struct {
-	outputDir  string
-	batchFile  string
-	formatSort string // valor de -S do yt-dlp já traduzido; vazio = melhor qualidade
+	outputDir string
+	batchFile string
+	// format e formatSort são os valores de -f e -S do yt-dlp já traduzidos
+	// a partir de -q; ambos vazios = melhor qualidade disponível.
+	format     string
+	formatSort string
 	start      string
 	end        string
 	urls       []string
@@ -60,7 +83,9 @@ func parseArgs(args []string, defaultOutputDir string) (*options, error) {
 	o := &options{}
 
 	fs := flag.NewFlagSet("download", flag.ContinueOnError)
-	fs.Usage = func() { fmt.Fprint(fs.Output(), usageText) }
+	// O FlagSet não imprime nada: quem reporta erros e ajuda é o Run, para
+	// não duplicar mensagens nem escrever a ajuda no stderr.
+	fs.SetOutput(io.Discard)
 	var quality string
 	fs.StringVar(&o.outputDir, "o", "", "diretório de saída")
 	fs.StringVar(&o.batchFile, "a", "", "ficheiro com um URL por linha")
@@ -69,15 +94,18 @@ func parseArgs(args []string, defaultOutputDir string) (*options, error) {
 	fs.StringVar(&o.end, "end", "", "tempo de fim do recorte")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil, errHelp
+		}
 		return nil, err
 	}
 	o.urls = fs.Args()
 
-	sort, err := downloader.SortForQuality(quality)
+	format, sort, err := downloader.QualitySelectors(quality)
 	if err != nil {
 		return nil, fmt.Errorf("-q: %w", err)
 	}
-	o.formatSort = sort
+	o.format, o.formatSort = format, sort
 
 	if o.outputDir == "" {
 		o.outputDir = defaultOutputDir
@@ -106,11 +134,8 @@ func parseArgs(args []string, defaultOutputDir string) (*options, error) {
 		if len(o.urls) != 1 {
 			return nil, fmt.Errorf("o recorte (-start/-end) exige exatamente um URL")
 		}
-		if err := downloader.ValidateTime(o.start); err != nil {
-			return nil, fmt.Errorf("-start: %w", err)
-		}
-		if err := downloader.ValidateTime(o.end); err != nil {
-			return nil, fmt.Errorf("-end: %w", err)
+		if err := downloader.ValidateRange(o.start, o.end); err != nil {
+			return nil, fmt.Errorf("recorte inválido: %w", err)
 		}
 	}
 
@@ -120,7 +145,44 @@ func parseArgs(args []string, defaultOutputDir string) (*options, error) {
 		}
 	}
 
+	if o.batchFile != "" {
+		if err := validateBatchFile(o.batchFile); err != nil {
+			return nil, err
+		}
+	}
+
 	return o, nil
+}
+
+// validateBatchFile garante que o ficheiro de -a existe e que cada linha útil
+// é um URL válido — apanhar isto aqui poupa uma execução inteira do yt-dlp.
+// Linhas vazias e comentários (#) são ignorados, como no yt-dlp.
+func validateBatchFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("ficheiro de URLs (-a): %w", err)
+	}
+	defer f.Close()
+
+	urls := 0
+	scanner := bufio.NewScanner(f)
+	for line := 1; scanner.Scan(); line++ {
+		text := strings.TrimSpace(scanner.Text())
+		if text == "" || strings.HasPrefix(text, "#") {
+			continue
+		}
+		if err := downloader.ValidateURL(text); err != nil {
+			return fmt.Errorf("%s, linha %d: %w", path, line, err)
+		}
+		urls++
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("erro ao ler %s: %w", path, err)
+	}
+	if urls == 0 {
+		return fmt.Errorf("%s não contém nenhum URL", path)
+	}
+	return nil
 }
 
 // Run executa o subcomando download. Não impõe timeout — playlists grandes
@@ -128,8 +190,13 @@ func parseArgs(args []string, defaultOutputDir string) (*options, error) {
 // os ficheiros .part ficam prontos para retomar na execução seguinte.
 func Run(ctx context.Context, args []string, cfg *config.Config, log *slog.Logger) error {
 	o, err := parseArgs(args, cfg.OutputDir)
+	if errors.Is(err, errHelp) {
+		fmt.Print(usageText)
+		return nil
+	}
 	if err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "%v\n\n%s", err, usageText)
+		return ErrUsage
 	}
 
 	if err := os.MkdirAll(o.outputDir, 0o755); err != nil {
@@ -139,6 +206,7 @@ func Run(ctx context.Context, args []string, cfg *config.Config, log *slog.Logge
 	opts := downloader.Options{
 		URLs:           o.urls,
 		BatchFile:      o.batchFile,
+		Format:         o.format,
 		FormatSort:     o.formatSort,
 		OutputTemplate: filepath.Join(o.outputDir, "%(title)s [%(id)s].%(ext)s"),
 		Continue:       true,
@@ -158,10 +226,32 @@ func Run(ctx context.Context, args []string, cfg *config.Config, log *slog.Logge
 
 	log.Info("a iniciar downloads", "output_dir", o.outputDir)
 
+	// O archive ganha uma linha por vídeo descarregado com sucesso: comparar
+	// antes e depois distingue "a playlist toda falhou" de "um vídeo privado
+	// pelo meio", que com --ignore-errors dão o mesmo código de saída.
+	before := countArchive(opts.ArchiveFile)
+
 	if err := downloader.Run(ctx, opts); err != nil {
+		if done := countArchive(opts.ArchiveFile) - before; done > 0 {
+			fmt.Printf("\n⚠️  %d vídeo(s) descarregado(s) em %s; outros falharam (vê os erros acima).\n", done, o.outputDir)
+			return ErrPartial
+		}
 		return fmt.Errorf("download falhou: %w", err)
 	}
 
 	fmt.Printf("\n✅ Downloads concluídos em %s\n", o.outputDir)
 	return nil
+}
+
+// countArchive conta as entradas do ficheiro de archive. Devolve 0 quando o
+// ficheiro não existe (primeira execução) ou não está a ser usado (recorte).
+func countArchive(path string) int {
+	if path == "" {
+		return 0
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	return bytes.Count(data, []byte("\n"))
 }

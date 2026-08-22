@@ -7,13 +7,16 @@ Bot de Discord escrito em Go que descarrega vídeos de redes sociais (YouTube, X
 ### Bot Discord (`dotboot bot`)
 - 📥 Download de vídeos de qualquer site suportado pelo yt-dlp
 - ✂️ Recorte de vídeos com timestamps (`inicio` e `fim`)
-- 🗜️ Compressão automática para respeitar o limite de 25MB do Discord
+- 📏 Limite de upload detetado por servidor (20MB sem boost, 50MB no Nível 2,
+  100MB no Nível 3) — sem recomprimir à toa em servidores impulsionados
+- 🗜️ Compressão dirigida ao tamanho: o bitrate é calculado a partir da duração
+  e do limite, reduzindo a resolução até o vídeo caber
 - 🚦 Limite de downloads simultâneos configurável
 - 🔄 Retry automático com backoff exponencial
 - 🛑 Encerramento gracioso: downloads em curso terminam antes do shutdown
 
 ### Modo CLI (`dotboot download`)
-- 🎞️ Melhor qualidade disponível por omissão — sem limite de 25MB nem
+- 🎞️ Melhor qualidade disponível por omissão — sem limite de tamanho nem
   compressão; a flag `-q` limita a resolução quando quiseres (ex: `-q 720`)
 - 📜 Playlists e canais inteiros num só comando
 - 📄 Ficheiro de URLs (`-a urls.txt`) e vários URLs de uma vez
@@ -84,6 +87,8 @@ Use o comando `/baixar` com os seguintes parâmetros:
 
 ### No terminal
 
+`dotboot help` (ou `dotboot download -h`) mostra a ajuda completa.
+
 > As flags têm de vir **antes** dos URLs.
 
 ```bash
@@ -96,7 +101,8 @@ dotboot download -o ~/Videos https://youtube.com/playlist?list=yyyy
 # Ficheiro com um URL por linha
 dotboot download -a urls.txt -o ~/Videos
 
-# Limitar a qualidade (sem -q descarrega sempre a melhor disponível)
+# Limitar a qualidade a 720p de altura (sem -q descarrega a melhor disponível).
+# Sites que não expõem a resolução dos formatos continuam a funcionar.
 dotboot download -q 720 -o aulas https://youtube.com/watch?v=xxxx
 
 # Recorte de um vídeo (um único URL)
@@ -152,15 +158,20 @@ por omissão).
 
 ```
 dotboot/
-├── cmd/dotboot/main.go      # Entrypoint + subcomandos (bot | download)
+├── cmd/dotboot/main.go      # Entrypoint + subcomandos (bot | download | help)
 ├── internal/
 │   ├── config/              # Configuração via variáveis de ambiente
 │   ├── downloader/          # yt-dlp + ffmpeg (sem dependência do Discord)
-│   ├── bot/                 # Sessão Discord, handler /baixar, shutdown
-│   └── cli/                 # Modo terminal
+│   │                        #   args.go, downloader.go, compress.go,
+│   │                        #   validate.go, errors.go
+│   ├── bot/                 # Sessão Discord, handler /baixar, limites,
+│   │                        #   retries, shutdown
+│   └── cli/                 # Modo terminal (parsing de flags + orquestração)
+├── *_test.go                # Testes de tabela, ao lado do código que testam
 ├── go.mod / go.sum          # Dependências Go
 ├── Dockerfile               # Build multi-stage (prod + dev)
 ├── docker-compose.yml       # Orquestração com profiles
+├── .dockerignore            # Exclusões do contexto de build
 ├── .env.example             # Template de configuração
 └── README.md                # Esta documentação
 ```
@@ -172,7 +183,8 @@ dotboot/
 | Variável | Descrição | Default |
 |----------|-----------|---------|
 | `DISCORD_TOKEN` | Token do bot Discord (só para `dotboot bot`) | — (obrigatório) |
-| `DOTBOOT_MAX_FILE_SIZE_MB` | Limite de upload do Discord em MB | `25` |
+| `DOTBOOT_GUILD_ID` | Regista o comando só neste servidor (propagação instantânea) | — (registo global) |
+| `DOTBOOT_MAX_FILE_SIZE_MB` | Teto opcional do upload, em MB (só baixa o limite) | — (limite do servidor) |
 | `DOTBOOT_DOWNLOAD_TIMEOUT` | Timeout por download no bot (sintaxe Go) | `10m` |
 | `DOTBOOT_MAX_CONCURRENT` | Downloads simultâneos no bot | `3` |
 | `DOTBOOT_SHUTDOWN_GRACE` | Espera por downloads em curso no shutdown | `30s` |
@@ -181,15 +193,46 @@ dotboot/
 | `DOTBOOT_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` | `info` |
 
 Os limites de tamanho, timeout e concorrência aplicam-se **apenas ao bot**; o
-modo CLI descarrega sempre na melhor qualidade e sem limites de tamanho.
+modo CLI não tem limite de tamanho nem compressão. Por omissão o CLI também
+descarrega na melhor qualidade disponível — a flag `-q` é que limita a
+resolução quando quiseres (ex: `-q 720`).
+
+### Limite de upload do Discord
+
+O bot deteta o limite em cada pedido, a partir do nível de boost do servidor
+onde o `/baixar` foi usado:
+
+| Servidor | Limite |
+|----------|--------|
+| Sem boost ou Nível 1 | 20 MB |
+| Boost Nível 2 | 50 MB |
+| Boost Nível 3 | 100 MB |
+| Mensagem direta (DM) | 20 MB |
+
+> O limite gratuito passou de 10MB para 20MB a 13 de agosto de 2026.
+
+Vídeos acima do limite são recodificados: o bitrate é calculado a partir da
+duração e do orçamento disponível, e a resolução desce (720p, depois 480p) até
+o ficheiro caber. Quando nem assim é possível — tipicamente vídeos longos, em
+que sobrariam menos de 150 kbps de vídeo — a mensagem de erro diz-te de quanto
+seria preciso e sugere um recorte com `inicio`/`fim` ou o modo terminal.
+
+`DOTBOOT_MAX_FILE_SIZE_MB` só **baixa** este limite; nunca o aumenta, porque o
+Discord recusaria o upload à mesma.
 
 ## 🐛 Troubleshooting
 
 ### Bot não conecta
 
-1. Verifique se o token está correto no `.env`
+1. Verifique se o token está correto no `.env` (sem o prefixo `Bot `)
 2. Confirme que o bot tem as permissões necessárias no servidor
 3. Verifique os logs: `docker compose logs videobot`
+
+### O comando `/baixar` não aparece
+
+Comandos globais podem demorar até 1 hora a propagar depois do primeiro
+registo. Para testar de imediato, defina `DOTBOOT_GUILD_ID` com o ID do seu
+servidor — o registo passa a ser instantâneo.
 
 ### Download falha
 
@@ -200,7 +243,9 @@ modo CLI descarrega sempre na melhor qualidade e sem limites de tamanho.
 
 ### Erro de upload (bot)
 
-- **"Demasiado grande"**: Mesmo com compressão, excede o limite — use `dotboot download`
+- **"Demasiado grande"**: Mesmo com compressão, excede o limite do servidor.
+  A mensagem indica o bitrate que seria necessário — faça um recorte com
+  `inicio`/`fim`, impulsione o servidor, ou use `dotboot download`
 - **"Timeout"**: Conexão lenta, tente novamente
 - **"Rate limit"**: Muitos uploads, aguarde alguns segundos
 
@@ -229,7 +274,7 @@ go test ./...
 
 ### Live Reload
 
-O modo de desenvolvimento usa [Air](https://github.com/cosmtrek/air) para recompilar automaticamente:
+O modo de desenvolvimento usa [Air](https://github.com/air-verse/air) para recompilar automaticamente:
 
 ```bash
 docker compose --profile dev up
@@ -248,6 +293,10 @@ docker compose exec videobot sh
 
 # Testar yt-dlp manualmente
 docker compose exec videobot yt-dlp --version
+
+# Atualizar o yt-dlp (quebra sempre que o YouTube muda): reconstruir a imagem
+docker compose build --build-arg YTDLP_VERSION=latest videobot
+docker compose up -d videobot
 
 # Verificar dependências
 docker compose exec videobot ffmpeg -version
@@ -284,7 +333,8 @@ docker compose -f docker-compose.yml --env-file .env.production up -d
 
 ## 📄 Licença
 
-Este projeto é fornecido como-está para fins educacionais e de desenvolvimento.
+Este projeto não tem ficheiro de licença: é fornecido como-está, para fins
+educacionais e de desenvolvimento.
 
 ---
 

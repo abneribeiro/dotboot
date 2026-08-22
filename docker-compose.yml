@@ -6,19 +6,22 @@ services:
       network: host
     env_file: .env
     restart: unless-stopped
-    network_mode: host
+    # Verifica o heartbeat que o bot escreve enquanto está ligado ao Discord
+    # (ver HEALTHCHECK no Dockerfile).
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "/dotboot"]
+      test: ["CMD-SHELL", "find /tmp/dotboot.alive -newermt '-90 seconds' 2>/dev/null | grep -q ."]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
-    # Resource limits to prevent excessive memory/CPU usage
+      start_period: 60s
+    # Resource limits to prevent excessive memory/CPU usage.
+    # A compressão de vídeo (x264) é o consumidor dominante: com 0.5 CPU um
+    # encode não termina dentro dos 15 minutos do token da interação.
     deploy:
       resources:
         limits:
           memory: 512M
-          cpus: '0.5'
+          cpus: '2.0'
     # Improved logging configuration
     logging:
       driver: "json-file"
@@ -33,7 +36,6 @@ services:
       target: development
       network: host
     env_file: .env
-    network_mode: host
     volumes:
       # Mount source code for live reload
       - .:/app

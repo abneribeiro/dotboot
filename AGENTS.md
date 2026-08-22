@@ -6,13 +6,14 @@ dotboot is a Go application with two modes sharing one binary:
 
 - **`dotboot bot`** — Discord bot that downloads videos from social media
   platforms using `yt-dlp` and uploads them to Discord channels via the
-  `/baixar` slash command. Supports video trimming, automatic FFmpeg
-  compression for files exceeding Discord's upload limit (25 MB default),
-  bounded download concurrency, exponential backoff retry logic, and
-  two-phase graceful shutdown.
-- **`dotboot download`** — terminal downloader without Discord's limits:
-  best quality, no compression, playlist/channel support, URL batch files,
-  and resumable "continue" semantics via `--download-archive` + `--continue`.
+  `/baixar` slash command. Supports video trimming, a per-guild upload limit
+  derived from the server's boost tier, size-targeted FFmpeg compression for
+  files exceeding it, bounded download concurrency, exponential backoff retry
+  logic, and two-phase graceful shutdown.
+- **`dotboot download`** — terminal downloader without Discord's limits: no
+  size cap and no compression, best quality by default with an optional
+  height cap (`-q 720`), playlist/channel support, URL batch files, and
+  resumable "continue" semantics via `--download-archive` + `--continue`.
 
 **Stack**: Go 1.24, discordgo, yt-dlp, FFmpeg, Docker
 
@@ -67,6 +68,18 @@ go test -cover ./...
 
 Test files are named `*_test.go` and live alongside the source files they test.
 
+Integration tests are gated behind a build tag so `go test ./...` stays fast
+and offline. They execute the real yt-dlp and ffmpeg against the network and
+cover the whole bot download path — work dir, format selection, size-targeted
+compression, and cleanup:
+
+```bash
+go test -tags integration -v -timeout 20m ./internal/downloader
+```
+
+They need `yt-dlp`, `ffmpeg` and `ffprobe` on PATH. If the host lacks them,
+run inside the production image (which ships all three).
+
 ## Linting & Formatting
 
 No linter config (`.golangci.yml`) exists. Use Go's built-in tools:
@@ -90,10 +103,12 @@ internal/config/         Env-var configuration with strict validation —
                          invalid values error out, never fall back silently.
 internal/downloader/     yt-dlp + ffmpeg invocation. BOUNDARY RULE: this
                          package must NEVER import discordgo. Shared by both
-                         modes. BuildArgs is pure; Run executes yt-dlp;
-                         DownloadForDiscord adds temp-file + size handling.
-internal/bot/            Discord session lifecycle, /baixar handler,
-                         retry helpers, two-phase graceful shutdown.
+                         modes. BuildArgs, QualitySelectors, sortForBudget and
+                         bitratesFor are pure; Run executes yt-dlp;
+                         DownloadForDiscord adds work-dir + size handling.
+internal/bot/            Discord session lifecycle, /baixar handler, upload
+                         limits (limits.go), retry helpers, two-phase
+                         graceful shutdown.
 internal/cli/            Terminal download mode (flag parsing + orchestration).
 ```
 
@@ -108,9 +123,22 @@ Key invariants to preserve:
   instantly and defeat the grace period.
 - **SIGINT, not SIGKILL**: `cmd.Cancel` sends `os.Interrupt` to yt-dlp/ffmpeg
   with a `WaitDelay` fallback, so `.part` files survive and CLI resume works.
-- **Glob only in `DownloadForDiscord`**: finding the output file by glob is
-  safe only because `--no-playlist` guarantees a single file. CLI mode never
-  globs — yt-dlp owns the output names.
+- **One work dir per bot download**: `DownloadForDiscord` creates its own
+  `<TempDir>/dotboot-*` directory and returns it in `Result.WorkDir`. The
+  caller MUST `os.RemoveAll` it on every path, error paths included — that
+  single call is what keeps `.part` files, per-format fragments and rejected
+  re-encodes from piling up. CLI mode has no work dir: yt-dlp owns the
+  output names and writes straight to the user's directory.
+- **`--print-to-file` implies `--simulate`**: `BuildArgs` always emits
+  `--no-simulate` alongside it. Dropping that pair would make the bot print a
+  path and download nothing.
+- **The upload limit is per-guild, never a constant**: it comes from
+  `Guild.PremiumTier` (see `internal/bot/limits.go`) and is resolved per
+  interaction. `DOTBOOT_MAX_FILE_SIZE_MB` is a ceiling that can only lower it.
+- **The interaction token lives 15 minutes**: `interactionDeadline` derives it
+  from the interaction snowflake, and it bounds both the queue wait and the
+  download timeout. Work that would finish after it is work whose result can
+  never be delivered.
 - **Trim + archive don't mix**: a trimmed download must not write to the
   download archive (it would mark the full video as done forever) and forces
   `--no-playlist`.
@@ -174,9 +202,10 @@ Do NOT use `SCREAMING_SNAKE_CASE` for constants — follow Go convention.
    …). Callers use `errors.As` + a switch on `Kind` to pick user-facing
    messages — never `strings.Contains` on translated messages.
 
-4. **Discord upload errors** are the exception: they come from discordgo, not
-   the downloader, and are still matched by substring in
-   `internal/bot/handler.go`.
+4. **Discord upload errors** come from discordgo, not the downloader, and are
+   classified with `errors.As` on `*discordgo.RESTError` (HTTP status and the
+   Discord error code, e.g. 40005) in `messageForUploadError` — never by
+   substring on a translated message.
 
 5. **Never discard errors silently** — even best-effort Discord replies log
    their errors (`respondWithError`/`editWithError`).
@@ -201,36 +230,53 @@ from `DOTBOOT_LOG_LEVEL`. The default logger is set in `cmd/dotboot/main.go`.
 
 - **Async processing**: downloads run in goroutines launched from the handler,
   bounded by the semaphore channel and tracked by the WaitGroup.
-- **Context with timeout**: each bot download gets
-  `context.WithTimeout(dlCtx, cfg.DownloadTimeout)`. CLI downloads have no
-  timeout (playlists can take hours) — only signal cancellation.
-- **Defer for cleanup**: always use `defer` to remove temporary files.
+- **Context with timeout**: each bot download gets the smaller of
+  `cfg.DownloadTimeout` and the time left on the interaction token. CLI
+  downloads have no timeout (playlists can take hours) — only signal
+  cancellation.
+- **Defer for cleanup**: always `defer os.RemoveAll(res.WorkDir)` as soon as
+  the work dir exists, before checking the download error.
 
 ### Retry Pattern
 
 Network operations use hand-rolled exponential backoff (see
 `internal/bot/retry.go`): classify errors with `isNetworkError()` (string
 matching), retry only on transient network errors, cap delay at
-`maxRetryDelay`, limit attempts to `maxRetries`.
+`maxRetryDelay`, limit attempts to `maxRetries`. Waits go through
+`sleepCtx` so a SIGTERM is observed immediately instead of after the delay.
+
+The REST `http.Client` has a 15-minute `Timeout` on purpose: that timeout
+covers writing the request body, so a short one silently aborts large
+uploads. `ResponseHeaderTimeout` stays short — in Go it only starts after the
+body is fully written.
 
 ## Configuration
 
 All knobs are env vars parsed in `internal/config` (see `.env.example`):
-`DISCORD_TOKEN`, `DOTBOOT_MAX_FILE_SIZE_MB`, `DOTBOOT_DOWNLOAD_TIMEOUT`,
-`DOTBOOT_MAX_CONCURRENT`, `DOTBOOT_SHUTDOWN_GRACE`, `DOTBOOT_OUTPUT_DIR`,
-`DOTBOOT_TEMP_DIR`, `DOTBOOT_LOG_LEVEL`.
+`DISCORD_TOKEN`, `DOTBOOT_GUILD_ID`, `DOTBOOT_MAX_FILE_SIZE_MB`,
+`DOTBOOT_DOWNLOAD_TIMEOUT`, `DOTBOOT_MAX_CONCURRENT`,
+`DOTBOOT_SHUTDOWN_GRACE`, `DOTBOOT_OUTPUT_DIR`, `DOTBOOT_TEMP_DIR`,
+`DOTBOOT_LOG_LEVEL`.
+
+`DOTBOOT_MAX_FILE_SIZE_MB` defaults to 0 = no ceiling; the effective limit is
+the guild's. `DOTBOOT_GUILD_ID` scopes command registration to one server
+(instant propagation) instead of globally (up to 1 hour).
 
 `DOTBOOT_OUTPUT_DIR` is the CLI **base path**: used when `-o` is absent, and
 the root for relative `-o` values (`-o aulas` → `$base/aulas`); an absolute
 `-o` ignores it. It never affects the bot, which only uses `DOTBOOT_TEMP_DIR`.
 
 Historical note: the old `compressionThreshold` constant (20 MB) was removed —
-it was never used. Compression triggers strictly above `MaxFileSizeBytes()`.
+it was never used. Compression triggers strictly above the resolved per-guild
+limit, and `Config.MaxFileSizeBytes()` is gone with it: the limit is no longer
+a property of the configuration.
 
 ## Environment & Dependencies
 
-- **Runtime deps**: `yt-dlp` (Python), `ffmpeg` (system package). Both modes
-  require both binaries (best-quality CLI downloads need ffmpeg for merging).
+- **Runtime deps**: `yt-dlp`, `ffmpeg` and `ffprobe`. Both modes require all
+  three (best-quality CLI downloads need ffmpeg for merging; the bot needs
+  ffprobe to measure duration and resolution before compressing). Checked at
+  startup by `checkBinaries` in `cmd/dotboot/main.go`.
 - **Config**: `.env` file (see `.env.example`). Never commit `.env` — it is
   gitignored and contains secrets.
 - **Go deps**: Managed via Go Modules (`go.mod` / `go.sum`). Keep them
@@ -244,8 +290,14 @@ Multi-stage `Dockerfile` with four targets:
 |---------------|--------------------------------------------|
 | `base`        | Go + dependency download (cache layer)     |
 | `builder`     | Compile static binary (`CGO_ENABLED=0`, `./cmd/dotboot`) |
-| `development` | Alpine + Air live reload + yt-dlp + ffmpeg (runs `bot` via `--build.args_bin`) |
-| `production`  | Debian slim + compiled binary + yt-dlp + ffmpeg (`ENTRYPOINT /dotboot`, `CMD bot`) |
+| `development` | Alpine + Air live reload + yt-dlp (pip) + ffmpeg (runs `bot` via `--build.args_bin`) |
+| `production`  | Debian slim + compiled binary + yt-dlp (standalone binary, no Python) + ffmpeg, non-root, `ENTRYPOINT /dotboot`, `CMD bot` |
+
+The production healthcheck reads `/tmp/dotboot.alive`, a heartbeat the bot
+rewrites every 30s while connected (`startHeartbeat` in `internal/bot/bot.go`).
+Keep the two in sync: changing the path or the interval breaks the check.
+`--build-arg YTDLP_VERSION=<tag>` busts the yt-dlp layer cache — yt-dlp is the
+dependency that ages fastest, since it breaks whenever YouTube changes.
 
 `docker-compose.yml` uses profiles: default for production, `--profile dev`
 for development with Air. The production image runs the bot by default; pass

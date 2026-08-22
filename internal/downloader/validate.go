@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
+	"strings"
 )
 
 // timePattern valida formatos de tempo aceites pelo yt-dlp/ffmpeg.
@@ -29,6 +31,33 @@ func ValidateURL(raw string) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("URL inválido: falta o host")
+	}
+	return nil
+}
+
+// parseTime converte um tempo já validado em segundos.
+func parseTime(s string) int {
+	parts := strings.Split(s, ":")
+	total := 0
+	for _, p := range parts {
+		n, _ := strconv.Atoi(p)
+		total = total*60 + n
+	}
+	return total
+}
+
+// ValidateRange verifica o formato de ambos os tempos e que o início é
+// anterior ao fim. Sem esta verificação um recorte invertido chegaria ao
+// yt-dlp como "*02:00-01:00" e produziria um ficheiro vazio.
+func ValidateRange(start, end string) error {
+	if err := ValidateTime(start); err != nil {
+		return err
+	}
+	if err := ValidateTime(end); err != nil {
+		return err
+	}
+	if parseTime(start) >= parseTime(end) {
+		return fmt.Errorf("o início (%s) tem de ser anterior ao fim (%s)", start, end)
 	}
 	return nil
 }

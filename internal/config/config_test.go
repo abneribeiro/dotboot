@@ -17,8 +17,12 @@ func TestLoadFromDefaults(t *testing.T) {
 		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
 	}
 
-	if cfg.MaxFileSizeMB != 25 {
-		t.Errorf("MaxFileSizeMB = %d, esperado 25", cfg.MaxFileSizeMB)
+	// Zero = sem teto; o limite real vem do nível de boost do servidor.
+	if cfg.MaxFileSizeMB != 0 {
+		t.Errorf("MaxFileSizeMB = %d, esperado 0 (sem teto)", cfg.MaxFileSizeMB)
+	}
+	if cfg.GuildID != "" {
+		t.Errorf("GuildID = %q, esperado vazio", cfg.GuildID)
 	}
 	if cfg.DownloadTimeout != 10*time.Minute {
 		t.Errorf("DownloadTimeout = %v, esperado 10m", cfg.DownloadTimeout)
@@ -32,14 +36,12 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel = %v, esperado info", cfg.LogLevel)
 	}
-	if cfg.MaxFileSizeBytes() != 25*1024*1024 {
-		t.Errorf("MaxFileSizeBytes = %d, esperado %d", cfg.MaxFileSizeBytes(), 25*1024*1024)
-	}
 }
 
 func TestLoadFromOverrides(t *testing.T) {
 	cfg, err := loadFrom(envMap(map[string]string{
 		"DISCORD_TOKEN":            "token123",
+		"DOTBOOT_GUILD_ID":         "123456789",
 		"DOTBOOT_MAX_FILE_SIZE_MB": "50",
 		"DOTBOOT_DOWNLOAD_TIMEOUT": "30m",
 		"DOTBOOT_MAX_CONCURRENT":   "5",
@@ -54,6 +56,9 @@ func TestLoadFromOverrides(t *testing.T) {
 
 	if cfg.DiscordToken != "token123" {
 		t.Errorf("DiscordToken = %q, esperado token123", cfg.DiscordToken)
+	}
+	if cfg.GuildID != "123456789" {
+		t.Errorf("GuildID = %q, esperado 123456789", cfg.GuildID)
 	}
 	if cfg.MaxFileSizeMB != 50 {
 		t.Errorf("MaxFileSizeMB = %d, esperado 50", cfg.MaxFileSizeMB)

@@ -97,7 +97,7 @@ func TestMessageForError(t *testing.T) {
 		err  error
 		want string // substring esperada na mensagem
 	}{
-		{"demasiado grande", &downloader.DownloadError{Kind: downloader.ErrTooLarge}, "25MB"},
+		{"demasiado grande", &downloader.DownloadError{Kind: downloader.ErrTooLarge, Msg: "o vídeo excede o limite de 20MB"}, "20MB"},
 		{"live sem DVR", &downloader.DownloadError{Kind: downloader.ErrLiveNoDVR}, "live"},
 		{"timeout", &downloader.DownloadError{Kind: downloader.ErrTimeout}, "demasiado tempo"},
 		{"URL não suportado", &downloader.DownloadError{Kind: downloader.ErrUnsupportedURL}, "não suportado"},
@@ -109,7 +109,7 @@ func TestMessageForError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := messageForError(tt.err, 25)
+			got := messageForError(tt.err)
 			if !strings.Contains(got, tt.want) {
 				t.Errorf("messageForError(%v) = %q, devia conter %q", tt.err, got, tt.want)
 			}

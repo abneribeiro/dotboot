@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -87,7 +88,15 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err != nil {
+	switch {
+	case err == nil:
+	case errors.Is(err, cli.ErrUsage):
+		// Já foi impresso, com a ajuda, no stderr.
+		os.Exit(2)
+	case errors.Is(err, cli.ErrPartial):
+		// Já foi reportado; só o código de saída é que muda.
+		os.Exit(1)
+	default:
 		logger.Error("erro fatal", "err", err)
 		os.Exit(1)
 	}
@@ -101,9 +110,12 @@ func runBot(ctx context.Context, cfg *config.Config, logger *slog.Logger) error 
 	if cfg.DiscordToken == "" {
 		return fmt.Errorf("DISCORD_TOKEN não está definido; define a variável de ambiente antes de executar o bot")
 	}
-	// O prefixo "Bot " é adicionado automaticamente pelo bot.
+	// O prefixo "Bot " é adicionado pelo bot.New. Deixá-lo no token produziria
+	// "Bot Bot <token>" e uma falha de autenticação, por isso remove-se aqui
+	// em vez de apenas avisar.
 	if strings.HasPrefix(cfg.DiscordToken, "Bot ") {
-		logger.Warn("DISCORD_TOKEN começa com \"Bot \" — o prefixo é adicionado automaticamente, remove-o do token")
+		logger.Warn("DISCORD_TOKEN começa com \"Bot \" — o prefixo é adicionado automaticamente e foi removido")
+		cfg.DiscordToken = strings.TrimSpace(strings.TrimPrefix(cfg.DiscordToken, "Bot "))
 	}
 
 	b, err := bot.New(cfg, logger)
@@ -123,8 +135,9 @@ func runDownload(ctx context.Context, cfg *config.Config, logger *slog.Logger, a
 }
 
 // checkBinaries garante que as dependências externas estão no PATH.
+// O ffprobe é usado para medir a duração e a resolução antes de comprimir.
 func checkBinaries() error {
-	for _, name := range []string{"yt-dlp", "ffmpeg"} {
+	for _, name := range []string{"yt-dlp", "ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(name); err != nil {
 			return fmt.Errorf("%s não encontrado no PATH: %w", name, err)
 		}

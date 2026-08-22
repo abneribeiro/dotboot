@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,8 +17,9 @@ import (
 	"dotboot/internal/config"
 )
 
-// command define o Slash Command /baixar com os seus parâmetros.
-var command = &discordgo.ApplicationCommand{
+// commands é o conjunto completo de Slash Commands do bot. O
+// BulkOverwrite repõe exatamente esta lista em cada arranque.
+var commands = []*discordgo.ApplicationCommand{{
 	Name:        "baixar",
 	Description: "Descarrega um vídeo de YouTube, X.com ou Instagram e envia-o para o canal.",
 	Options: []*discordgo.ApplicationCommandOption{
@@ -39,7 +42,7 @@ var command = &discordgo.ApplicationCommand{
 			Required:    false,
 		},
 	},
-}
+}}
 
 // Bot agrega a sessão Discord e o estado de controlo de downloads.
 type Bot struct {
@@ -100,16 +103,22 @@ func New(cfg *config.Config, log *slog.Logger) (*Bot, error) {
 func (b *Bot) Run(ctx context.Context) error {
 	defer b.dlStop()
 
-	if err := connectWithRetry(b.session, b.log); err != nil {
+	if err := connectWithRetry(ctx, b.session, b.log); err != nil {
 		return fmt.Errorf("erro ao abrir a ligação com o Discord: %w", err)
 	}
 	defer b.session.Close()
 
-	// Comandos globais podem demorar até 1 hora a propagar.
-	registeredCmd, err := registerCommandWithRetry(b.session, b.log)
-	if err != nil {
+	// Comandos globais podem demorar até 1 hora a propagar — daí o registo
+	// ser idempotente e o comando NUNCA ser apagado no encerramento: um
+	// reinício deixaria o /baixar invisível durante essa hora.
+	if err := registerCommandsWithRetry(ctx, b.session, b.cfg.GuildID, b.log); err != nil {
 		return fmt.Errorf("erro ao registar o comando /baixar: %w", err)
 	}
+
+	// Sinal de vida para o healthcheck do container, que só sabe ver o
+	// ficheiro (não tem acesso ao estado interno do bot).
+	stopHeartbeat := b.startHeartbeat()
+	defer stopHeartbeat()
 
 	b.log.Info("bot está a correr; pressiona CTRL+C para terminar")
 	<-ctx.Done()
@@ -126,32 +135,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		waitWithTimeout(&b.wg, 5*time.Second)
 	}
 
-	// Remove o Slash Command ao encerrar para manter o Discord limpo.
-	b.deleteCommand(registeredCmd)
 	return nil
-}
-
-// deleteCommand remove o slash command com um timeout para não bloquear
-// o encerramento indefinidamente.
-func (b *Bot) deleteCommand(cmd *discordgo.ApplicationCommand) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- b.session.ApplicationCommandDelete(b.session.State.User.ID, "", cmd.ID)
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			b.log.Warn("erro ao remover o comando /baixar", "err", err)
-		} else {
-			b.log.Info("comando /baixar removido com sucesso")
-		}
-	case <-ctx.Done():
-		b.log.Warn("timeout ao tentar remover o comando /baixar")
-	}
 }
 
 // waitWithTimeout espera pelo WaitGroup até d. Devolve true se terminou a tempo.
@@ -168,4 +152,40 @@ func waitWithTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 	case <-time.After(d):
 		return false
 	}
+}
+
+// heartbeatFile é o ficheiro que o healthcheck do container observa.
+const heartbeatFile = "dotboot.alive"
+
+// heartbeatInterval tem de ser bem mais curto do que a janela que o
+// healthcheck aceita, para uma execução lenta não dar falso negativo.
+const heartbeatInterval = 30 * time.Second
+
+// startHeartbeat atualiza periodicamente a data do ficheiro de heartbeat
+// enquanto o bot está ligado. Devolve a função que para o ciclo.
+func (b *Bot) startHeartbeat() func() {
+	path := filepath.Join(b.cfg.TempDir, heartbeatFile)
+	touch := func() {
+		if err := os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+			b.log.Debug("não foi possível escrever o heartbeat", "path", path, "err", err)
+		}
+	}
+	touch()
+
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				touch()
+			case <-done:
+				os.Remove(path)
+				return
+			}
+		}
+	}()
+
+	return func() { close(done) }
 }

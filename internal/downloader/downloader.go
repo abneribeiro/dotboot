@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -69,51 +71,151 @@ func Run(ctx context.Context, o Options) error {
 
 // DiscordOpts parametriza um download destinado a upload no Discord.
 type DiscordOpts struct {
-	MaxFileSize int64 // limite de upload em bytes
+	MaxFileSize int64 // limite de upload em bytes, já com margens aplicadas
 	TempDir     string
 }
 
-// DownloadForDiscord descarrega um único vídeo para um ficheiro temporário
-// único, garante que cabe em MaxFileSize (recodificando com ffmpeg se preciso)
-// e devolve o caminho final. O chamador é responsável por eliminar o ficheiro;
-// o caminho pode ser não vazio mesmo em caso de erro, para permitir a limpeza.
+// Result descreve o ficheiro pronto a enviar para o Discord.
+type Result struct {
+	// Path é o ficheiro final (já dentro do limite de tamanho).
+	Path string
+
+	// WorkDir é o diretório privado deste download. O chamador tem SEMPRE de
+	// o remover com os.RemoveAll, mesmo quando DownloadForDiscord devolve
+	// erro — é o que garante que fragmentos, .part e comprimidos parciais
+	// não se acumulam em TempDir.
+	WorkDir string
+
+	// Name é o nome do anexo a enviar, com a extensão real do contentor.
+	Name string
+}
+
+const mib = 1024 * 1024
+
+// sortForBudget escolhe a resolução preferida em função do orçamento de
+// upload: não vale a pena descarregar 4K para depois recomprimir até 20MB,
+// mas com 100MB disponíveis 1080p passa muitas vezes sem recompressão.
+func sortForBudget(maxSize int64) string {
+	if maxSize <= 24*mib {
+		return "res:720"
+	}
+	return "res:1080"
+}
+
+// downloadCap é um travão de sanidade para o --max-filesize: impede
+// descarregar ficheiros absurdos que nunca caberiam nem depois de comprimir,
+// mas fica muito acima do limite de upload para não roubar à compressão o
+// material com que trabalhar.
+func downloadCap(maxSize int64) int64 {
+	const floor = 500 * mib
+	if cap := maxSize * 25; cap > floor {
+		return cap
+	}
+	return floor
+}
+
+// DownloadForDiscord descarrega um único vídeo para um diretório temporário
+// exclusivo, garante que cabe em MaxFileSize (recodificando com ffmpeg se
+// preciso) e devolve o resultado. O Result.WorkDir devolvido tem de ser
+// removido pelo chamador em todos os casos, incluindo os de erro.
 // O timeout vem do contexto do chamador.
-func DownloadForDiscord(ctx context.Context, url string, sec *Section, o DiscordOpts) (string, error) {
+func DownloadForDiscord(ctx context.Context, url string, sec *Section, o DiscordOpts) (Result, error) {
 	slog.Info("a iniciar download para Discord", "url", url)
 
-	// Nome único por nanossegundos para evitar colisões entre goroutines.
-	uniqueID := fmt.Sprintf("%d", time.Now().UnixNano())
-	outputTemplate := filepath.Join(o.TempDir, fmt.Sprintf("dotboot_%s.%%(ext)s", uniqueID))
+	// Um diretório por download: isola goroutines concorrentes e reduz a
+	// limpeza a um único os.RemoveAll.
+	workDir, err := os.MkdirTemp(o.TempDir, "dotboot-")
+	if err != nil {
+		return Result{}, fmt.Errorf("não foi possível criar o diretório temporário: %w", err)
+	}
+	res := Result{WorkDir: workDir}
+
+	pathFile := filepath.Join(workDir, "final.path")
 
 	opts := Options{
-		URLs:           []string{url},
-		OutputTemplate: outputTemplate,
-		Format:         fmt.Sprintf("best[filesize<%dM]/best", o.MaxFileSize/(1024*1024)),
-		NoPlaylist:     true,
-		MergeFormat:    "mp4",
-		Quiet:          true,
-		Section:        sec,
+		URLs: []string{url},
+		// %(title).80B trunca a 80 bytes (não runes), o que é seguro com
+		// títulos unicode; --restrict-filenames mantém o nome em ASCII.
+		OutputTemplate:    filepath.Join(workDir, "%(title).80B.%(ext)s"),
+		Format:            "bv*+ba/b",
+		FormatSort:        sortForBudget(o.MaxFileSize),
+		MaxFileSize:       downloadCap(o.MaxFileSize),
+		RestrictFilenames: true,
+		PrintToFile:       pathFile,
+		NoPlaylist:        true,
+		MergeFormat:       "mp4",
+		Quiet:             true,
+		Section:           sec,
 	}
 
 	if err := Run(ctx, opts); err != nil {
-		return "", err
+		return res, err
 	}
 
-	// O yt-dlp substitui %(ext)s pela extensão real; o Glob encontra o
-	// ficheiro independentemente dela. Seguro apenas aqui: --no-playlist
-	// garante um único ficheiro de saída.
-	pattern := filepath.Join(o.TempDir, fmt.Sprintf("dotboot_%s.*", uniqueID))
-	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) == 0 {
-		return "", fmt.Errorf("ficheiro descarregado não encontrado em: %s", pattern)
-	}
-	downloadedFile := matches[0]
-
-	processedFile, err := validateAndProcessVideo(ctx, downloadedFile, o.MaxFileSize, o.TempDir)
+	downloadedFile, err := finalFile(workDir, pathFile)
 	if err != nil {
-		return processedFile, err // devolve o caminho para limpeza mesmo com erro
+		return res, err
 	}
 
-	slog.Info("vídeo processado com sucesso", "path", processedFile)
-	return processedFile, nil
+	processedFile, err := validateAndProcessVideo(ctx, downloadedFile, o.MaxFileSize, workDir)
+	res.Path = processedFile
+	res.Name = filepath.Base(processedFile)
+	if err != nil {
+		return res, err
+	}
+
+	slog.Info("vídeo processado com sucesso", "path", processedFile, "name", res.Name)
+	return res, nil
+}
+
+// fragmentPattern identifica os ficheiros por-formato que o yt-dlp deixa
+// quando um merge é interrompido (ex: "Video.f299.mp4").
+var fragmentPattern = regexp.MustCompile(`\.f\d+\.[^.]+$`)
+
+// finalFile determina o ficheiro descarregado. A fonte de verdade é o
+// caminho que o yt-dlp escreveu com --print-to-file; a varredura do
+// diretório é apenas uma rede de segurança para o caso de o yt-dlp não o
+// ter escrito (ex: versão antiga).
+func finalFile(workDir, pathFile string) (string, error) {
+	if data, err := os.ReadFile(pathFile); err == nil {
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		candidate := strings.TrimSpace(lines[len(lines)-1])
+		if candidate != "" {
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
+			slog.Warn("caminho indicado pelo yt-dlp não existe, a procurar no diretório", "path", candidate)
+		}
+	}
+
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		return "", fmt.Errorf("erro ao listar o diretório de trabalho: %w", err)
+	}
+
+	var best string
+	var bestSize int64 = -1
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == filepath.Base(pathFile) {
+			continue
+		}
+		// Descarta trabalho intermédio do yt-dlp.
+		if strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".ytdl") ||
+			strings.HasSuffix(name, ".temp") || fragmentPattern.MatchString(name) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.Size() > bestSize {
+			best, bestSize = filepath.Join(workDir, name), info.Size()
+		}
+	}
+
+	if best == "" {
+		return "", fmt.Errorf("ficheiro descarregado não encontrado em %s", workDir)
+	}
+	return best, nil
 }

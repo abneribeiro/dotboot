@@ -16,12 +16,6 @@ dotboot
 # Documentation
 *.md
 
-# Development files (now removed)
-# These files no longer exist but kept for reference
-# .air.toml
-# Dockerfile.dev
-# docker-compose.dev.yml
-
 # Temporary files
 tmp/
 *.tmp
