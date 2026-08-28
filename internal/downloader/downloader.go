@@ -138,7 +138,7 @@ func DownloadForDiscord(ctx context.Context, url string, sec *Section, o Discord
 		// títulos unicode; --restrict-filenames mantém o nome em ASCII.
 		OutputTemplate:    filepath.Join(workDir, "%(title).80B.%(ext)s"),
 		Format:            "bv*+ba/b",
-		FormatSort:        sortForBudget(o.MaxFileSize),
+		FormatSort:        MP4Sort(sortForBudget(o.MaxFileSize)),
 		MaxFileSize:       downloadCap(o.MaxFileSize),
 		RestrictFilenames: true,
 		PrintToFile:       pathFile,
@@ -157,6 +157,11 @@ func DownloadForDiscord(ctx context.Context, url string, sec *Section, o Discord
 		return res, err
 	}
 
+	downloadedFile, err = ensureMP4WithinBudget(ctx, downloadedFile, o.MaxFileSize)
+	if err != nil {
+		return res, err
+	}
+
 	processedFile, err := validateAndProcessVideo(ctx, downloadedFile, o.MaxFileSize, workDir)
 	res.Path = processedFile
 	res.Name = filepath.Base(processedFile)
@@ -166,6 +171,23 @@ func DownloadForDiscord(ctx context.Context, url string, sec *Section, o Discord
 
 	slog.Info("vídeo processado com sucesso", "path", processedFile, "name", res.Name)
 	return res, nil
+}
+
+// ensureMP4WithinBudget aplica o EnsureMP4 ao ficheiro descarregado, exceto
+// quando este já excede o limite de upload: nesse caso o validateAndProcessVideo
+// vai recodificá-lo de qualquer forma, e a sua saída já é H.264/AAC em MP4
+// (ver encode, em compress.go). Converter aqui seria recodificar duas vezes.
+//
+// Um erro a medir o tamanho não é fatal: converte-se à mesma, porque a garantia
+// de formato importa mais do que a otimização.
+func ensureMP4WithinBudget(ctx context.Context, path string, maxSize int64) (string, error) {
+	if info, err := os.Stat(path); err == nil && info.Size() > maxSize {
+		slog.Debug("conversão adiada: o ficheiro vai ser recomprimido na mesma",
+			"path", path, "size_bytes", info.Size(), "limit_bytes", maxSize)
+		return path, nil
+	}
+	// Sem progress: no bot ninguém está a ver um terminal.
+	return EnsureMP4(ctx, path, nil)
 }
 
 // fragmentPattern identifica os ficheiros por-formato que o yt-dlp deixa

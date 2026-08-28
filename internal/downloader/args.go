@@ -99,6 +99,30 @@ func QualitySelectors(q string) (format, sort string, err error) {
 	return format, fmt.Sprintf("res:%d", n), nil
 }
 
+// mp4CodecSort faz o yt-dlp preferir H.264 + AAC — o único par que iPhones e
+// Androids reproduzem nativamente. São os mesmos campos do preset oficial
+// "-t mp4" do yt-dlp.
+const mp4CodecSort = "vcodec:h264,acodec:aac"
+
+// MP4Sort junta a preferência de codecs a uma ordenação de resolução.
+// resSort vazio significa "a maior resolução disponível".
+//
+// A resolução vem SEMPRE primeiro: pedir -q 2160 tem de dar 2160p mesmo que
+// essa altura só exista em AV1 (é o EnsureMP4 que converte depois). Com o
+// vcodec à frente, um H.264 a 480p ganharia a um AV1 a 2160p e o -q seria
+// silenciosamente ignorado.
+//
+// Como critério de desempate, porém, o vcodec vale ouro: entre dois formatos
+// da mesma altura escolhe o H.264, que dispensa qualquer recodificação. É isso
+// que faz o caminho comum (YouTube até 1080p, Instagram, TikTok, X) sair em
+// MP4 sem custo nenhum de CPU.
+func MP4Sort(resSort string) string {
+	if resSort == "" {
+		resSort = "res"
+	}
+	return resSort + "," + mp4CodecSort
+}
+
 // BuildArgs constrói a lista de argumentos do yt-dlp a partir das opções.
 // É uma função pura para ser testável sem executar o yt-dlp.
 func BuildArgs(o Options) []string {

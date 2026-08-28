@@ -6,6 +6,7 @@ Bot de Discord escrito em Go que descarrega vídeos de redes sociais (YouTube, X
 
 ### Bot Discord (`dotboot bot`)
 - 📥 Download de vídeos de qualquer site suportado pelo yt-dlp
+- 📱 Anexos sempre em MP4 (H.264 + AAC), que tocam inline no Discord e no iPhone
 - ✂️ Recorte de vídeos com timestamps (`inicio` e `fim`)
 - 📏 Limite de upload detetado por servidor (20MB sem boost, 50MB no Nível 2,
   100MB no Nível 3) — sem recomprimir à toa em servidores impulsionados
@@ -16,6 +17,9 @@ Bot de Discord escrito em Go que descarrega vídeos de redes sociais (YouTube, X
 - 🛑 Encerramento gracioso: downloads em curso terminam antes do shutdown
 
 ### Modo CLI (`dotboot download`)
+- 📱 **Sempre MP4 (H.264 + AAC)** — o formato que o iPhone, o iOS Fotos e o
+  Android abrem sem qualquer conversão. Nunca sai `.webm` nem `.mkv`
+  (`-formato original` desliga a garantia, se preferires o ficheiro cru)
 - 🎞️ Melhor qualidade disponível por omissão — sem limite de tamanho nem
   compressão; a flag `-q` limita a resolução quando quiseres (ex: `-q 720`)
 - 📜 Playlists e canais inteiros num só comando
@@ -29,7 +33,9 @@ Bot de Discord escrito em Go que descarrega vídeos de redes sociais (YouTube, X
 
 ### Pré-requisitos
 
-- [Docker](https://docs.docker.com/get-docker/) e [Docker Compose](https://docs.docker.com/compose/install/) — ou, para correr localmente: Go 1.24+, `yt-dlp` e `ffmpeg` no PATH
+- [Docker](https://docs.docker.com/get-docker/) e [Docker Compose](https://docs.docker.com/compose/install/) — ou, para correr localmente: Go 1.24+, `yt-dlp`, `ffmpeg` e `ffprobe` no PATH
+  (o `ffprobe` vem no pacote do `ffmpeg`; o bot usa-o para medir a duração
+  antes de comprimir)
 - Token de bot do Discord ([Discord Developer Portal](https://discord.com/developers/applications)) — apenas para o modo bot
 
 ### Configuração
@@ -105,6 +111,11 @@ dotboot download -a urls.txt -o ~/Videos
 # Sites que não expõem a resolução dos formatos continuam a funcionar.
 dotboot download -q 720 -o aulas https://youtube.com/watch?v=xxxx
 
+# Guardar o ficheiro tal como o site o serve, sem garantir MP4.
+# Pode sair .webm/.mkv (AV1/VP9 + Opus), que o iPhone não lê — mas é o mais
+# rápido e sem perdas quando o destino é um PC.
+dotboot download -formato original https://youtube.com/watch?v=xxxx
+
 # Recorte de um vídeo (um único URL)
 dotboot download -start 01:30 -end 02:00 https://x.com/user/status/123
 
@@ -118,31 +129,116 @@ docker compose run --rm -v ~/Videos:/videos videobot download -o /videos <url>
 
 #### CLI via Docker de qualquer pasta (wrapper)
 
+
 Sem `yt-dlp`/`ffmpeg` instalados no host, a imagem do bot serve de CLI a partir
 de qualquer pasta com um pequeno wrapper no PATH (ex: `~/.local/bin/dotboot`,
 com `chmod +x`):
 
 ```sh
 #!/bin/sh
-# Pasta base no host; -o relativo (ex: -o aulas) cria subpastas dentro dela.
+# dotboot — wrapper que corre a CLI dentro do container.
 BASE="${DOTBOOT_OUTPUT_DIR:-$HOME/Videos}"
+IMAGE="${DOTBOOT_IMAGE:-dotboot:latest}"
 
+mkdir -p "$BASE"
+
+# Aceita as duas formas: "dotboot <url>" e "dotboot download <url>".
+# Sem isto, escrever o subcomando (como a ajuda manda) fazia a palavra
+# "download" ser interpretada como um URL.
+case "$1" in
+  download|bot|help|-h|--help) ;;
+  *) set -- download "$@" ;;
+esac
+
+# Um "-o" com caminho absoluto do host é montado em /out e reescrito. A shell
+# expande o ~ ANTES de o wrapper o ver, por isso "-o ~/Videos" chega aqui já
+# como "/home/…/Videos" — sem esta tradução seria interpretado dentro do
+# container, onde não existe, e falhava com "permission denied".
+OUT_VOL=""
+count=$#
+while [ "$count" -gt 0 ]; do
+  arg="$1"; shift; count=$((count - 1))
+  if [ "$arg" = "-o" ] && [ "$count" -gt 0 ]; then
+    val="$1"; shift; count=$((count - 1))
+    case "$val" in
+      /*) mkdir -p "$val" && OUT_VOL="$val" && val="/out" ;;
+    esac
+    set -- "$@" -o "$val"
+  else
+    set -- "$@" "$arg"
+  fi
+done
+
+# Só liga o TTY quando há terminal, para o progresso do yt-dlp aparecer.
 TTY=""
 [ -t 0 ] && TTY="-t"
 
-# A pasta atual é montada em /cwd para -a urls.txt funcionar.
+if [ -n "$OUT_VOL" ]; then
+  set -- -v "$OUT_VOL:/out" "$IMAGE" "$@"
+else
+  set -- "$IMAGE" "$@"
+fi
+
+# --user faz os ficheiros descarregados pertencerem a ti, e não ao utilizador
+# interno do container. A pasta atual vai para /cwd para o "-a" funcionar.
 exec docker run --rm -i $TTY \
-  --network host \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  -e DOTBOOT_OUTPUT_DIR=/videos \
   -v "$BASE:/videos" \
   -v "$PWD:/cwd" \
   -w /cwd \
-  -e DOTBOOT_OUTPUT_DIR=/videos \
-  dotboot-videobot:latest "$@"
+  "$@"
 ```
 
-Constrói a imagem uma vez com `docker compose build videobot` e repete o build
-sempre que o código mudar. Com o wrapper usa sempre `-o` **relativo** — um
+Com este wrapper funcionam todas estas formas:
+
+```bash
+dotboot <url>                     # para $DOTBOOT_OUTPUT_DIR (default ~/Videos)
+dotboot download <url>            # igual, com o subcomando explícito
+dotboot download -o aulas <url>   # relativo: cria ~/Videos/aulas
+dotboot download -o ~/Videos <url>  # absoluto: montado em /out
+```
+
+> No zsh, URLs com `?` (ex: `watch?v=...`) têm de ir entre aspas, ou a shell
+> tenta expandi-los como glob.
+
+Constrói a imagem uma vez com `docker build --target production -t dotboot:latest .`
+e repete o build sempre que o código mudar (ou aponta `DOTBOOT_IMAGE` para
+outra tag). Com o wrapper usa sempre `-o` **relativo** — um
 caminho absoluto referiria o sistema de ficheiros do container, não o do host.
+
+### 📱 Formato de saída: MP4 que o telemóvel lê
+
+Por omissão **todos os downloads saem em MP4 com vídeo H.264 e áudio AAC** — a
+única combinação que o iPhone (incluindo a app Fotos), o Android e o player
+inline do Discord reproduzem sem conversão nenhuma da tua parte.
+
+Isto não é automático no yt-dlp: por omissão ele prefere AV1/VP9 + Opus, que
+produzem `.webm` ou `.mkv`. O dotboot garante o MP4 em duas camadas:
+
+1. **Pedir os codecs certos** (`-S <res>,vcodec:h264,acodec:aac` mais
+   `--merge-output-format mp4`). No YouTube até 1080p, no Instagram, no TikTok
+   e no X isto resolve tudo — o ficheiro chega já em MP4/H.264, **sem
+   recodificar e sem perder qualidade**.
+2. **Verificar e corrigir** o que aterrou, com `ffprobe` + `ffmpeg`. É esta
+   camada que apanha as fontes que simplesmente não têm H.264 — acima de 1080p
+   o YouTube só serve VP9/AV1. Só aí há recodificação, e o dotboot avisa-te
+   antes de a começar.
+
+| Situação | O que acontece | Custo |
+|---|---|---|
+| Fonte já em H.264/AAC (a maioria) | usa-se tal e qual | um `ffprobe` |
+| Codecs certos, contentor errado (`.webm`/`.mkv`) | remux para `.mp4` | segundos, sem perdas |
+| Só o áudio incompatível (Opus) | recodifica-se só o áudio | rápido |
+| Fonte sem H.264 (YouTube >1080p, AV1) | recodifica-se o vídeo | lento, com aviso |
+
+Se preferires a qualidade máxima bruta e não te importas de converter à mão,
+`-formato original` devolve o comportamento do yt-dlp puro.
+
+> **Dica**: `-q 1080` é o ponto doce no YouTube — é a maior altura com H.264
+> disponível, por isso descarrega no máximo de qualidade *sem* recodificar.
+> Acima disso a conversão é inevitável e pode demorar vários minutos.
 
 **Continuar downloads**: o modo CLI guarda um registo dos vídeos já
 descarregados em `<pasta>/.dotboot-archive.txt`. Re-executar o mesmo comando
@@ -150,7 +246,8 @@ descarregados em `<pasta>/.dotboot-archive.txt`. Re-executar o mesmo comando
 o que falta. Downloads interrompidos a meio (CTRL+C) deixam ficheiros `.part`
 que são retomados automaticamente.
 
-Os ficheiros são gravados como `Título do Vídeo [id].ext`. Em sistemas de
+Os ficheiros são gravados como `Título do Vídeo [id].mp4` (ou `.ext` com
+`-formato original`). Em sistemas de
 ficheiros restritivos, considere o `--restrict-filenames` do yt-dlp (não ativado
 por omissão).
 
@@ -195,7 +292,8 @@ dotboot/
 Os limites de tamanho, timeout e concorrência aplicam-se **apenas ao bot**; o
 modo CLI não tem limite de tamanho nem compressão. Por omissão o CLI também
 descarrega na melhor qualidade disponível — a flag `-q` é que limita a
-resolução quando quiseres (ex: `-q 720`).
+resolução quando quiseres (ex: `-q 720`). Em ambos os modos a saída é sempre
+MP4/H.264/AAC (ver acima).
 
 ### Limite de upload do Discord
 
@@ -240,6 +338,13 @@ servidor — o registo passa a ser instantâneo.
 - **"Vídeo privado"**: O vídeo não é acessível publicamente
 - **"Live sem DVR"**: Streams ao vivo sem rewind não suportam recorte
 - **"Timeout"**: Vídeo muito longo; aumente `DOTBOOT_DOWNLOAD_TIMEOUT` ou use o modo CLI
+
+### O download está muito lento no fim
+
+Se a mensagem `🔄 ... a converter para H.264` aparecer, a fonte não tinha H.264
+e o vídeo está a ser recodificado para poder tocar no telemóvel. Para evitar:
+use `-q 1080` (a maior altura com H.264 no YouTube) ou `-formato original` se
+não precisar de MP4.
 
 ### Erro de upload (bot)
 
@@ -294,8 +399,12 @@ docker compose exec videobot sh
 # Testar yt-dlp manualmente
 docker compose exec videobot yt-dlp --version
 
-# Atualizar o yt-dlp (quebra sempre que o YouTube muda): reconstruir a imagem
-docker compose build --build-arg YTDLP_VERSION=latest videobot
+# Atualizar o yt-dlp (quebra sempre que o YouTube muda): reconstruir a imagem.
+# Atenção: repetir o MESMO valor de YTDLP_VERSION reaproveita a camada em cache
+# e não atualiza nada. Passa uma tag concreta (que também fixa a versão)...
+docker compose build --build-arg YTDLP_VERSION=2026.08.19 videobot
+# ...ou força o rebuild da camada quando queres mesmo a mais recente:
+docker compose build --no-cache videobot
 docker compose up -d videobot
 
 # Verificar dependências

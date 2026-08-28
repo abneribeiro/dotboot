@@ -37,6 +37,9 @@ Flags de download (têm de vir antes dos URLs):
   -a FICHEIRO   Ficheiro com um URL por linha
   -q QUALIDADE  Qualidade do vídeo: best (default) ou altura máxima em pixels
                 (ex: 1080, 720, 480)
+  -formato FMT  mp4 (default) garante MP4 com H.264/AAC, que o iPhone e o
+                Android leem sem conversão; original guarda o ficheiro tal
+                como o site o serve (pode ser .webm ou .mkv)
   -start TEMPO  Início do recorte, MM:SS ou HH:MM:SS (exige -end e um único URL)
   -end TEMPO    Fim do recorte
 

@@ -14,6 +14,7 @@ dotboot is a Go application with two modes sharing one binary:
   size cap and no compression, best quality by default with an optional
   height cap (`-q 720`), playlist/channel support, URL batch files, and
   resumable "continue" semantics via `--download-archive` + `--continue`.
+  Output is guaranteed MP4/H.264/AAC unless `-formato original` opts out.
 
 **Stack**: Go 1.24, discordgo, yt-dlp, FFmpeg, Docker
 
@@ -103,8 +104,10 @@ internal/config/         Env-var configuration with strict validation —
                          invalid values error out, never fall back silently.
 internal/downloader/     yt-dlp + ffmpeg invocation. BOUNDARY RULE: this
                          package must NEVER import discordgo. Shared by both
-                         modes. BuildArgs, QualitySelectors, sortForBudget and
+                         modes. BuildArgs, QualitySelectors, MP4Sort,
+                         mp4Compatible, compatArgs, sortForBudget and
                          bitratesFor are pure; Run executes yt-dlp;
+                         EnsureMP4 (compat.go) enforces the output format;
                          DownloadForDiscord adds work-dir + size handling.
 internal/bot/            Discord session lifecycle, /baixar handler, upload
                          limits (limits.go), retry helpers, two-phase
@@ -116,6 +119,19 @@ Key invariants to preserve:
 
 - **Downloader/Discord boundary**: `internal/downloader` has zero Discord
   knowledge. Callers translate `DownloadError.Kind` into user-facing messages.
+- **Output is always MP4 / H.264 8-bit / AAC**: it is the only combination
+  iPhones, Android and Discord's inline player all decode. Two layers enforce
+  it and BOTH are needed. First, `MP4Sort` asks yt-dlp to *prefer* those codecs
+  (`-S <res>,vcodec:h264,acodec:aac` + `--merge-output-format mp4`) — free, and
+  enough for YouTube up to 1080p, Instagram, TikTok and X. Second, `EnsureMP4`
+  probes what actually landed and fixes it, because a preference is not a
+  guarantee: above 1080p YouTube has no H.264 at all. Note the ordering inside
+  `MP4Sort` — resolution must outrank `vcodec`, or a 480p H.264 would beat a
+  2160p AV1 and `-q 2160` would be silently ignored. `EnsureMP4` copies every
+  stream that is already conformant, so the common path costs one `ffprobe`.
+  Watch `-pix_fmt yuv420p` when re-encoding: a 10-bit source would otherwise
+  produce H.264 High10, which has the right codec name and still will not play
+  on an iPhone.
 - **Two-phase shutdown** (`internal/bot/bot.go`): the download context derives
   from `context.Background()`, NOT from the signal context. On shutdown the
   bot first waits `ShutdownGrace` for in-flight downloads, and only then

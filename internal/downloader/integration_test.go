@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,7 +55,159 @@ func TestDownloadForDiscordCabeNoLimite(t *testing.T) {
 	if !strings.HasSuffix(res.Name, ".mp4") {
 		t.Errorf("Name = %q, esperado terminar em .mp4", res.Name)
 	}
+	// A extensão certa não chega: um MP4 com AV1/VP9 + Opus não abre num
+	// iPhone. Isto verifica o que está mesmo lá dentro.
+	assertPlayableOnPhones(t, ctx, res.Path)
 	t.Logf("ficheiro: %s (%d bytes)", res.Name, info.Size())
+}
+
+// assertPlayableOnPhones confirma que o ficheiro é H.264 8 bits + AAC dentro de
+// MP4 — o único par que o iPhone, o iOS Fotos e o Android leem sem conversão.
+func assertPlayableOnPhones(t *testing.T, ctx context.Context, path string) {
+	t.Helper()
+
+	vcodec, acodec, pixFmt, err := probeStreams(ctx, path)
+	if err != nil {
+		t.Fatalf("ffprobe falhou em %s: %v", path, err)
+	}
+	if !mp4Compatible(filepath.Ext(path), vcodec, acodec, pixFmt) {
+		t.Errorf("%s não é reproduzível num telemóvel: ext=%s vcodec=%s acodec=%s pix_fmt=%s",
+			filepath.Base(path), filepath.Ext(path), vcodec, acodec, pixFmt)
+	}
+	t.Logf("codecs: %s / %s (%s)", vcodec, acodec, pixFmt)
+}
+
+// makeTestVideo gera localmente um ficheiro com os codecs pedidos. É preferível
+// a descarregar um vídeo real: não depende da rede nem de o YouTube continuar a
+// servir determinado formato, e produz exatamente a combinação a testar.
+func makeTestVideo(t *testing.T, ctx context.Context, path string, ffmpegArgs ...string) {
+	t.Helper()
+
+	args := []string{
+		"-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=25",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+	}
+	args = append(args, ffmpegArgs...)
+	args = append(args, "-y", path)
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("não foi possível gerar %s: %v\n%s", path, err, out)
+	}
+}
+
+// TestEnsureMP4RecodificaFonteSemH264 exercita o caso que o -S não resolve: um
+// VP9/Opus, que é o que o YouTube serve acima de 1080p e o que saía deste
+// projeto como .webm. Só a recodificação o torna reproduzível num iPhone.
+func TestEnsureMP4RecodificaFonteSemH264(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "so-vp9.webm")
+	makeTestVideo(t, ctx, source,
+		"-c:v", "libvpx-vp9", "-b:v", "300k", "-c:a", "libopus")
+
+	got, err := EnsureMP4(ctx, source, nil)
+	if err != nil {
+		t.Fatalf("EnsureMP4 falhou: %v", err)
+	}
+	assertPlayableOnPhones(t, ctx, got)
+	if _, err := os.Stat(source); err == nil {
+		t.Errorf("o .webm original %s devia ter sido removido", source)
+	}
+}
+
+// TestEnsureMP4Recodifica10Bits fixa a armadilha do pixel format: um AV1/VP9 a
+// 10 bits convertido sem -pix_fmt dá H.264 High10, que tem os codecs certos e
+// mesmo assim não abre num iPhone.
+func TestEnsureMP4Recodifica10Bits(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "dez-bits.mp4")
+	makeTestVideo(t, ctx, source,
+		"-c:v", "libx264", "-pix_fmt", "yuv420p10le", "-c:a", "aac")
+
+	got, err := EnsureMP4(ctx, source, nil)
+	if err != nil {
+		t.Fatalf("EnsureMP4 falhou: %v", err)
+	}
+	_, _, pixFmt, err := probeStreams(ctx, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pixFmt != mp4PixFmt {
+		t.Errorf("pix_fmt = %q, esperado %q", pixFmt, mp4PixFmt)
+	}
+	assertPlayableOnPhones(t, ctx, got)
+}
+
+// TestEnsureMP4RemuxaSemPerdas verifica o caminho barato: quando os codecs já
+// estão certos e só o contentor está errado, o ficheiro é remuxado em segundos.
+func TestEnsureMP4RemuxaSemPerdas(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "fonte.mkv")
+
+	// Um MKV com H.264/AAC é exatamente o que um merge incompatível do yt-dlp
+	// produz: os codecs já estão certos, só o contentor é que não.
+	makeTestVideo(t, ctx, source, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac")
+
+	got, err := EnsureMP4(ctx, source, nil)
+	if err != nil {
+		t.Fatalf("EnsureMP4 falhou: %v", err)
+	}
+	if filepath.Ext(got) != ".mp4" {
+		t.Errorf("EnsureMP4 = %q, esperado um .mp4", got)
+	}
+	// O original tem de desaparecer: deixá-lo duplicaria o espaço em disco de
+	// cada download do CLI.
+	if _, err := os.Stat(source); err == nil {
+		t.Errorf("o ficheiro original %s devia ter sido removido", source)
+	}
+	assertPlayableOnPhones(t, ctx, got)
+
+	// Idempotência: correr outra vez sobre um ficheiro já conforme não pode
+	// tocar em nada.
+	again, err := EnsureMP4(ctx, got, nil)
+	if err != nil {
+		t.Fatalf("EnsureMP4 (2ª passagem) falhou: %v", err)
+	}
+	if again != got {
+		t.Errorf("EnsureMP4 devolveu %q na 2ª passagem, esperado o mesmo %q", again, got)
+	}
+}
+
+// testURLCurto é um vídeo de ~19s, para exercitar o caminho completo sem
+// descarregar um filme inteiro.
+const testURLCurto = "https://www.youtube.com/watch?v=C0DPdy98e4c"
+
+// TestDownloadForDiscordSemRecorte cobre o caso mais comum do bot — um
+// /baixar sem inicio/fim — que todos os outros testes saltavam por passarem
+// sempre uma Section.
+func TestDownloadForDiscordSemRecorte(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	res, err := DownloadForDiscord(ctx, testURLCurto, nil, DiscordOpts{
+		MaxFileSize: 50 * mib,
+		TempDir:     t.TempDir(),
+	})
+	if res.WorkDir != "" {
+		defer os.RemoveAll(res.WorkDir)
+	}
+	if err != nil {
+		t.Fatalf("DownloadForDiscord falhou: %v", err)
+	}
+
+	if !strings.HasSuffix(res.Name, ".mp4") {
+		t.Errorf("Name = %q, esperado terminar em .mp4", res.Name)
+	}
+	assertPlayableOnPhones(t, ctx, res.Path)
 }
 
 // TestDownloadForDiscordComprime força a compressão com um limite apertado.

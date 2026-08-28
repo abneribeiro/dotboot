@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -72,7 +73,7 @@ func TestParseArgsValidation(t *testing.T) {
 		{"qualidade por altura é aceite", []string{"-q", "720", "https://youtu.be/a"}, false},
 		{"qualidade best é aceite", []string{"-q", "best", "https://youtu.be/a"}, false},
 		{"qualidade inválida", []string{"-q", "abc", "https://youtu.be/a"}, true},
-		{"flag desconhecida", []string{"-formato", "mp4", "https://youtu.be/a"}, true},
+		{"flag desconhecida", []string{"-legendas", "pt", "https://youtu.be/a"}, true},
 	}
 
 	for _, tt := range tests {
@@ -179,5 +180,105 @@ func TestCountArchive(t *testing.T) {
 	}
 	if got := countArchive(path); got != 2 {
 		t.Errorf("countArchive = %d, esperado 2", got)
+	}
+}
+
+func TestParseArgsFormato(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantMP4 bool
+		wantErr bool
+	}{
+		{"omissão garante mp4", []string{"https://youtu.be/x"}, true, false},
+		{"mp4 explícito", []string{"-formato", "mp4", "https://youtu.be/x"}, true, false},
+		{"original desliga a conversão", []string{"-formato", "original", "https://youtu.be/x"}, false, false},
+		{"valor inválido", []string{"-formato", "webm", "https://youtu.be/x"}, false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o, err := parseArgs(tt.args, "")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseArgs(%v) err = %v, wantErr = %v", tt.args, err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if o.mp4 != tt.wantMP4 {
+				t.Errorf("mp4 = %v, esperado %v", o.mp4, tt.wantMP4)
+			}
+		})
+	}
+}
+
+// A altura só é guardada para avisar que acima de 1080p a conversão é certa.
+func TestParseArgsGuardaAltura(t *testing.T) {
+	tests := []struct {
+		q    string
+		want int
+	}{
+		{"", 0},
+		{"best", 0},
+		{"720", 720},
+		{"2160", 2160},
+	}
+	for _, tt := range tests {
+		t.Run(tt.q, func(t *testing.T) {
+			args := []string{"https://youtu.be/x"}
+			if tt.q != "" {
+				args = append([]string{"-q", tt.q}, args...)
+			}
+			o, err := parseArgs(args, "")
+			if err != nil {
+				t.Fatalf("parseArgs falhou: %v", err)
+			}
+			if o.height != tt.want {
+				t.Errorf("height = %d, esperado %d", o.height, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrintedPaths(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "video.mp4")
+	if err := os.WriteFile(existing, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	listFile := filepath.Join(dir, "paths.txt")
+	// Linhas vazias e um ficheiro que já não existe (apagado entretanto, ou
+	// resto de uma execução anterior) não podem chegar ao ffmpeg.
+	content := existing + "\n\n" + filepath.Join(dir, "apagado.mkv") + "\n" + existing + "\n"
+	if err := os.WriteFile(listFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := printedPaths(listFile)
+	want := []string{existing, existing}
+	if len(got) != len(want) {
+		t.Fatalf("printedPaths = %v, esperado %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("printedPaths[%d] = %q, esperado %q", i, got[i], want[i])
+		}
+	}
+}
+
+// Um ficheiro de caminhos inexistente acontece sempre que o archive salta tudo:
+// tem de ser uma lista vazia, não um erro.
+func TestPrintedPathsFicheiroInexistente(t *testing.T) {
+	if got := printedPaths(filepath.Join(t.TempDir(), "nao-existe.txt")); got != nil {
+		t.Errorf("printedPaths = %v, esperado nil", got)
+	}
+}
+
+// -formato original não usa --print-to-file, por isso o ensurePlayable recebe
+// um caminho vazio e não pode fazer nada (nem falhar).
+func TestEnsurePlayableSemPathFile(t *testing.T) {
+	if err := ensurePlayable(context.Background(), ""); err != nil {
+		t.Errorf("ensurePlayable(\"\") = %v, esperado nil", err)
 	}
 }

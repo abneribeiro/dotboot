@@ -11,7 +11,7 @@ func TestBuildArgsBotMode(t *testing.T) {
 		URLs:              []string{"https://youtu.be/abc"},
 		OutputTemplate:    "/tmp/dotboot_123.%(ext)s",
 		Format:            "bv*+ba/b",
-		FormatSort:        "res:720",
+		FormatSort:        MP4Sort("res:720"),
 		MaxFileSize:       500 * 1024 * 1024,
 		RestrictFilenames: true,
 		PrintToFile:       "/tmp/work/final.path",
@@ -22,7 +22,7 @@ func TestBuildArgsBotMode(t *testing.T) {
 
 	want := []string{
 		"-f", "bv*+ba/b",
-		"-S", "res:720",
+		"-S", "res:720,vcodec:h264,acodec:aac",
 		"--merge-output-format", "mp4",
 		"--max-filesize", "524288000",
 		"--restrict-filenames",
@@ -84,8 +84,10 @@ func TestBuildArgsCLIMode(t *testing.T) {
 		t.Errorf("BuildArgs (CLI) =\n%v\nesperado\n%v", got, want)
 	}
 
-	// Sem limites do Discord: nada de -f, --quiet ou --merge-output-format.
-	for _, banned := range []string{"-f", "--quiet", "--no-warnings", "--merge-output-format", "--no-playlist"} {
+	// Sem limites do Discord: nada de -f nem do modo silencioso. O contentor,
+	// esse, é forçado também no CLI (ver TestBuildArgsCLIModeMP4) — o que não
+	// acontecia antes e fazia sair .webm/.mkv.
+	for _, banned := range []string{"-f", "--quiet", "--no-warnings", "--no-playlist"} {
 		if slices.Contains(got, banned) {
 			t.Errorf("BuildArgs (CLI) não devia conter %q", banned)
 		}
@@ -222,5 +224,65 @@ func TestBuildArgsFormatSort(t *testing.T) {
 	})
 	if !slices.Contains(got, "-S") || !slices.Contains(got, "res:720") {
 		t.Errorf("BuildArgs devia conter -S res:720: %v", got)
+	}
+}
+
+// TestBuildArgsCLIModeMP4 fixa o modo por omissão do CLI: contentor mp4 e a
+// preferência de codecs. Sem isto o yt-dlp escolhia AV1/VP9 + Opus e o
+// resultado não abria num iPhone.
+func TestBuildArgsCLIModeMP4(t *testing.T) {
+	got := BuildArgs(Options{
+		URLs:           []string{"https://youtu.be/abc"},
+		FormatSort:     MP4Sort(""),
+		MergeFormat:    "mp4",
+		OutputTemplate: "/videos/%(title)s [%(id)s].%(ext)s",
+		PrintToFile:    "/tmp/paths.txt",
+		Continue:       true,
+		IgnoreErrors:   true,
+	})
+
+	want := []string{
+		"-S", "res,vcodec:h264,acodec:aac",
+		"--merge-output-format", "mp4",
+		"-o", "/videos/%(title)s [%(id)s].%(ext)s",
+		"--continue",
+		"--ignore-errors",
+		"--newline",
+		"--print-to-file", "after_move:filepath", "/tmp/paths.txt", "--no-simulate",
+		"https://youtu.be/abc",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("BuildArgs (CLI mp4) =\n%v\nesperado\n%v", got, want)
+	}
+}
+
+func TestMP4Sort(t *testing.T) {
+	tests := []struct {
+		name    string
+		resSort string
+		want    string
+	}{
+		{"sem limite pede a maior resolução", "", "res,vcodec:h264,acodec:aac"},
+		{"limite do CLI", "res:720", "res:720,vcodec:h264,acodec:aac"},
+		{"orçamento do bot", "res:1080", "res:1080,vcodec:h264,acodec:aac"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MP4Sort(tt.resSort); got != tt.want {
+				t.Errorf("MP4Sort(%q) = %q, esperado %q", tt.resSort, got, tt.want)
+			}
+		})
+	}
+}
+
+// A resolução tem de vir ANTES do vcodec: com o vcodec à frente, um H.264 a
+// 480p ganhava a um AV1 a 2160p e o -q 2160 era silenciosamente ignorado.
+func TestMP4SortPrioritizaResolucaoSobreCodec(t *testing.T) {
+	got := MP4Sort("res:2160")
+	if !strings.HasPrefix(got, "res:2160,") {
+		t.Errorf("MP4Sort deve começar pela resolução: %q", got)
+	}
+	if strings.Index(got, "vcodec:h264") < strings.Index(got, "res:2160") {
+		t.Errorf("o vcodec não pode preceder a resolução: %q", got)
 	}
 }
