@@ -1,0 +1,24 @@
+# Mantém atualizadas as dependências Go, as actions e as imagens base do
+# Dockerfile. O yt-dlp, por ser um binário descarregado, atualiza-se com
+# `make update-ytdlp`.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # O estágio de stems precisa de um Python que o audio-separator e o
+      # PyTorch suportem: mudar de 3.12 é uma decisão, não uma atualização.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

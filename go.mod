@@ -1,4 +1,4 @@
-module dotboot
+module github.com/abneribeiro/dotboot
 
 go 1.24.0
 

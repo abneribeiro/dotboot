@@ -18,8 +18,8 @@ import (
 	"strconv"
 	"strings"
 
-	"dotboot/internal/config"
-	"dotboot/internal/downloader"
+	"github.com/abneribeiro/dotboot/internal/config"
+	"github.com/abneribeiro/dotboot/internal/downloader"
 )
 
 var (

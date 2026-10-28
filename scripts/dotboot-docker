@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# dotboot (via Docker) — corre a CLI do dotboot dentro de um container, sem
+# yt-dlp, ffmpeg nem deno no host. `make install-docker` instala-o no PATH.
+#
+#   dotboot <url>                      igual a "dotboot download <url>"
+#   dotboot download -o aulas <url>    relativo: fica dentro de $DOTBOOT_OUTPUT_DIR
+#   dotboot download -o ~/Videos <url> absoluto: montado no mesmo caminho
+#   dotboot stems ~/Musica/song.mp3    stems (imagem própria, modelos num volume)
+#
+# Variáveis: DOTBOOT_OUTPUT_DIR (default ~/Videos), DOTBOOT_IMAGE (default
+# dotboot:latest), DOTBOOT_STEMS_IMAGE (default dotboot-stems:latest),
+# DOTBOOT_COOKIES_FILE.
+set -euo pipefail
+
+base=${DOTBOOT_OUTPUT_DIR:-$HOME/Videos}
+image=${DOTBOOT_IMAGE:-dotboot:latest}
+mkdir -p "$base"
+
+# Aceita as duas formas: "dotboot <url>" e "dotboot download <url>".
+case "${1:-}" in
+download | stems | doctor | version | help | -h | --help) ;;
+"") set -- help ;;
+*) set -- download "$@" ;;
+esac
+
+cmd=$1
+shift
+
+# --user: os ficheiros descarregados ficam teus, e não do utilizador interno
+# do container. A pasta atual vai para /cwd para caminhos relativos (-a)
+# funcionarem.
+docker_args=(run --rm -i --init
+	--user "$(id -u):$(id -g)"
+	-e HOME=/tmp
+	-e DOTBOOT_OUTPUT_DIR=/videos
+	-v "$base:/videos"
+	-v "$PWD:/cwd" -w /cwd)
+# Só liga o TTY quando há terminal, para o progresso do yt-dlp aparecer.
+if [ -t 0 ] && [ -t 1 ]; then
+	docker_args+=(-t)
+fi
+for var in DOTBOOT_LOG_LEVEL DOTBOOT_JS_RUNTIMES; do
+	if [ -n "${!var:-}" ]; then
+		docker_args+=(-e "$var=${!var}")
+	fi
+done
+
+if [ "$cmd" = stems ]; then
+	image=${DOTBOOT_STEMS_IMAGE:-dotboot-stems:latest}
+	# Os modelos (dezenas a centenas de MB cada) descarregam-se uma só vez.
+	docker_args+=(-v dotboot-models:/models)
+fi
+
+# mount_same monta um caminho do host no MESMO caminho dentro do container:
+# assim os argumentos absolutos (-o ~/Videos, um ficheiro de música) não
+# precisam de ser reescritos.
+mounted=$'\n'
+mount_same() {
+	case "$mounted" in *$'\n'"$1"$'\n'*) return ;; esac
+	docker_args+=(-v "$1:$1:$2")
+	mounted+="$1"$'\n'
+}
+
+# Um ficheiro de cookies no .env do host fica disponível lá dentro. Gravável:
+# o yt-dlp atualiza-o no fim de cada execução.
+if [ -n "${DOTBOOT_COOKIES_FILE:-}" ] && [ -f "$DOTBOOT_COOKIES_FILE" ]; then
+	cookies=$(cd "$(dirname "$DOTBOOT_COOKIES_FILE")" && pwd)/$(basename "$DOTBOOT_COOKIES_FILE")
+	mount_same "$(dirname "$cookies")" rw
+	docker_args+=(-e "DOTBOOT_COOKIES_FILE=$cookies")
+fi
+
+# path_arg FLAG VALOR — monta o que um caminho absoluto precisa. Os relativos
+# já funcionam: -o fica dentro de /videos e o resto é relativo a /cwd.
+path_arg() {
+	case "$2" in /*) ;; *) return ;; esac
+	case "$1" in
+	-o)
+		mkdir -p "$2"
+		mount_same "$2" rw
+		;;
+	-a) mount_same "$(dirname "$2")" ro ;;
+	-cookies) mount_same "$(dirname "$2")" rw ;;
+	esac
+}
+
+out=("$cmd")
+while [ $# -gt 0 ]; do
+	arg=$1
+	shift
+	case "$arg" in
+	-o | -a | -cookies)
+		out+=("$arg")
+		if [ $# -gt 0 ]; then
+			path_arg "$arg" "$1"
+			out+=("$1")
+			shift
+		fi
+		;;
+	-o=* | -a=* | -cookies=*)
+		path_arg "${arg%%=*}" "${arg#*=}"
+		out+=("$arg")
+		;;
+	*)
+		# Um ficheiro local passado ao stems (ex: ~/Musica/song.mp3).
+		if [ "$cmd" = stems ] && [ -f "$arg" ]; then
+			case "$arg" in /*) mount_same "$(dirname "$arg")" ro ;; esac
+		fi
+		out+=("$arg")
+		;;
+	esac
+done
+
+exec docker "${docker_args[@]}" "$image" "${out[@]}"

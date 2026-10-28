@@ -7,7 +7,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"dotboot/internal/downloader"
+	"github.com/abneribeiro/dotboot/internal/downloader"
 )
 
 func strOption(name, value string) *discordgo.ApplicationCommandInteractionDataOption {
