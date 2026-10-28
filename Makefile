@@ -33,7 +33,10 @@ GORELEASER_IMAGE ?= goreleaser/goreleaser:v2.19.0
 export DOTBOOT_VERSION := $(VERSION)
 export DOTBOOT_COMMIT  := $(COMMIT)
 
-DOCKER_BUILD := docker build --network host \
+# DOCKER_BUILD_FLAGS acrescenta opções ao docker build, ex: --network host
+# numa máquina onde o DNS falhe dentro do build.
+DOCKER_BUILD_FLAGS ?=
+DOCKER_BUILD := docker build $(DOCKER_BUILD_FLAGS) \
 	--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE)
 
 # Avisa quando o diretório de instalação não está no PATH.
@@ -121,13 +124,13 @@ test-integration: ## Testes de integração no host (precisa de yt-dlp, ffmpeg e
 
 test-integration-docker: docker-build ## Testes de integração dentro da imagem de produção (RUN=padrão)
 	CGO_ENABLED=0 go test -c -tags integration -o $(BIN_DIR)/downloader.test ./internal/downloader
-	docker run --rm --network host --entrypoint /tests/downloader.test \
+	docker run --rm --entrypoint /tests/downloader.test \
 		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" $(IMAGE) \
 		-test.v -test.timeout 20m $(if $(RUN),-test.run '$(RUN)')
 
 test-integration-stems: stems-build ## Separação a sério dentro da imagem de stems (descarrega um modelo)
 	CGO_ENABLED=0 go test -c -tags integration -o $(BIN_DIR)/stems.test ./internal/stems
-	docker run --rm --network host --entrypoint /tests/stems.test \
+	docker run --rm --entrypoint /tests/stems.test \
 		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" -v dotboot-models:/models $(STEMS_IMAGE) \
 		-test.v -test.timeout 30m
 
