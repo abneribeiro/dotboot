@@ -1,28 +1,36 @@
 services:
   videobot:
+    # O mesmo nome que o `make docker-build` e o wrapper da CLI usam: uma só
+    # imagem, em vez de uma para o bot e outra (desatualizada) para a CLI.
+    image: dotboot:latest
     build:
       context: .
       target: production
       network: host
+      args:
+        VERSION: ${DOTBOOT_VERSION:-dev}
+        COMMIT: ${DOTBOOT_COMMIT:-}
     env_file: .env
+    # O tini recolhe os processos órfãos (ex: um ffmpeg cujo yt-dlp morreu),
+    # que com o dotboot como PID 1 ficavam zombies.
+    init: true
     restart: unless-stopped
-    # Verifica o heartbeat que o bot escreve enquanto está ligado ao Discord
-    # (ver HEALTHCHECK no Dockerfile).
-    healthcheck:
-      test: ["CMD-SHELL", "find /tmp/dotboot.alive -newermt '-90 seconds' 2>/dev/null | grep -q ."]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    # Resource limits to prevent excessive memory/CPU usage.
-    # A compressão de vídeo (x264) é o consumidor dominante: com 0.5 CPU um
-    # encode não termina dentro dos 15 minutos do token da interação.
+    # O Docker manda SIGTERM e, passado este tempo, SIGKILL. Tem de cobrir o
+    # DOTBOOT_SHUTDOWN_GRACE (30s) mais os 5s da segunda fase: com o default
+    # de 10s o encerramento gracioso nunca chegava a acontecer.
+    stop_grace_period: 45s
+    # O healthcheck vem da imagem (`dotboot healthcheck`).
     deploy:
       resources:
         limits:
-          memory: 512M
+          # O discordgo carrega o anexo inteiro em memória antes de o enviar:
+          # 3 uploads de 100MB (servidor com boost 3) mais o ffmpeg passavam
+          # dos 512M. Numa máquina com pouca RAM, baixa o
+          # DOTBOOT_MAX_CONCURRENT em vez deste limite.
+          memory: 1536M
+          # A compressão de vídeo (x264) é o consumidor dominante: com 0.5 CPU
+          # um encode não termina dentro dos 15 minutos do token da interação.
           cpus: '2.0'
-    # Improved logging configuration
     logging:
       driver: "json-file"
       options:
@@ -36,20 +44,17 @@ services:
       target: development
       network: host
     env_file: .env
+    init: true
+    stop_grace_period: 45s
     volumes:
       # Mount source code for live reload
       - .:/app
       # Cache Go modules to avoid re-downloading on every restart
       - go-modules:/go/pkg/mod
     working_dir: /app
-    # Override healthcheck for development (Air process)
+    # O Air reinicia o bot a cada alteração: um healthcheck só faria ruído.
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "air"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    # Improved logging for development
+      disable: true
     logging:
       driver: "json-file"
       options:

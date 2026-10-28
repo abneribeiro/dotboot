@@ -41,3 +41,12 @@ docker-compose*.yml
 vendor/
 *.test
 *.prof
+bin/
+dist/
+coverage.out
+
+# Instalação e CI (não entram na imagem)
+scripts/
+.github/
+Makefile
+.goreleaser.yaml
