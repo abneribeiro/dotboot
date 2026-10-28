@@ -4,6 +4,7 @@
 //
 //	dotboot bot          Arranca o bot Discord (/baixar)
 //	dotboot download     Descarrega vídeos via terminal, sem limites do Discord
+//	dotboot stems        Separa uma música em pistas (vozes, baixo, guitarra…)
 //	dotboot doctor       Verifica dependências e configuração
 //	dotboot healthcheck  Verifica o heartbeat do bot (HEALTHCHECK da imagem)
 //	dotboot version      Mostra a versão
@@ -36,6 +37,7 @@ const usageText = `dotboot — bot Discord e downloader de vídeos (yt-dlp)
 Uso:
   dotboot bot                        Arranca o bot Discord
   dotboot download [flags] URL...    Descarrega vídeos via terminal
+  dotboot stems [flags] URL|FICH...  Separa uma música em pistas (vozes, baixo, guitarra…)
   dotboot doctor                     Verifica dependências e configuração
   dotboot healthcheck                Verifica se o bot está ligado (Docker)
   dotboot version                    Mostra a versão
@@ -61,7 +63,13 @@ Exemplos:
 
 Re-executar "download" com o mesmo diretório salta os vídeos já descarregados
 (registados em .dotboot-archive.txt) e retoma downloads interrompidos.
+
+A ajuda completa de cada subcomando: dotboot download -h, dotboot stems -h.
 `
+
+// errMissingDeps marca a falta de um binário externo. É um problema de
+// instalação, não um "erro fatal": o main mostra-o sem o formato do log.
+var errMissingDeps = errors.New("dependência em falta")
 
 // Preenchidas com -ldflags "-X main.version=..." pelo Makefile, pelo
 // GoReleaser e pelo Dockerfile.
@@ -116,6 +124,8 @@ func main() {
 		err = runBot(ctx, cfg, logger)
 	case "download":
 		err = runDownload(ctx, cfg, logger, os.Args[2:])
+	case "stems":
+		err = runStems(ctx, cfg, logger, os.Args[2:])
 	case "doctor":
 		err = doctor.Run(ctx, cfg, os.Stdout)
 	case "healthcheck":
@@ -137,6 +147,9 @@ func main() {
 	case errors.Is(err, cli.ErrInterrupted):
 		// 128 + SIGINT, como as shells: um CTRL+C não é um "erro fatal".
 		os.Exit(130)
+	case errors.Is(err, errMissingDeps):
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
 	case errors.Is(err, cli.ErrPartial), errors.Is(err, doctor.ErrProblems):
 		// Já foi reportado; só o código de saída é que muda.
 		os.Exit(1)
@@ -147,7 +160,7 @@ func main() {
 }
 
 func runBot(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
-	if err := checkBinaries("yt-dlp", "ffmpeg", "ffprobe"); err != nil {
+	if err := checkBinaries(nil, "yt-dlp", "ffmpeg", "ffprobe"); err != nil {
 		return err
 	}
 	configureJSRuntime(cfg, logger)
@@ -174,21 +187,48 @@ func runDownload(ctx context.Context, cfg *config.Config, logger *slog.Logger, a
 	// O ffmpeg continua a ser necessário: o yt-dlp usa-o para juntar as
 	// streams de vídeo e áudio dos formatos de melhor qualidade, e o ffprobe
 	// decide se o resultado já é MP4 compatível.
-	if err := checkBinaries("yt-dlp", "ffmpeg", "ffprobe"); err != nil {
+	if err := checkBinaries(args, "yt-dlp", "ffmpeg", "ffprobe"); err != nil {
 		return err
 	}
 	configureJSRuntime(cfg, logger)
 	return cli.Run(ctx, args, cfg, logger)
 }
 
-// checkBinaries garante que as dependências externas estão no PATH.
-func checkBinaries(names ...string) error {
+func runStems(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
+	// O yt-dlp só é preciso para URLs, e o cli.RunStems verifica-o nesse caso.
+	if err := checkBinaries(args, "ffmpeg", "audio-separator"); err != nil {
+		return fmt.Errorf("%w — a separação de stems instala-se com `make deps-stems`, ou usa a imagem Docker (make stems-build)", err)
+	}
+	configureJSRuntime(cfg, logger)
+	return cli.RunStems(ctx, args, cfg, logger)
+}
+
+// checkBinaries garante que as dependências externas estão no PATH. Um
+// pedido de ajuda (-h) passa sempre: ler a ajuda não pode exigir o ffmpeg.
+func checkBinaries(args []string, names ...string) error {
+	if wantsHelp(args) {
+		return nil
+	}
 	for _, name := range names {
 		if _, err := exec.LookPath(name); err != nil {
-			return fmt.Errorf("%s não encontrado no PATH (instala com `make deps` ou vê `dotboot doctor`): %w", name, err)
+			return fmt.Errorf("%w: %s não está no PATH (instala com `make deps`, ou vê o que falta com `dotboot doctor`)",
+				errMissingDeps, name)
 		}
 	}
 	return nil
+}
+
+// wantsHelp reporta se os argumentos de um subcomando pedem a ajuda.
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "-h", "-help", "--help":
+			return true
+		case "--":
+			return false
+		}
+	}
+	return false
 }
 
 // configureJSRuntime escolhe o runtime JavaScript com que o yt-dlp resolve os

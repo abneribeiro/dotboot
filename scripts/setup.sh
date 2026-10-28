@@ -110,7 +110,7 @@ if [ "$docker_ok" = 1 ]; then
 		make docker-build
 	fi
 
-	if [ "${STEMS:-}" = 1 ] || { [ -z "${STEMS:-}" ] && ask "Construir também a imagem de stems (~1.5GB, separa guitarra/baixo/voz)?" n; }; then
+	if [ "${STEMS:-}" = 1 ] || { [ -z "${STEMS:-}" ] && ask "Construir também a imagem de stems (~3GB, separa guitarra/baixo/voz)?" n; }; then
 		make stems-build
 	fi
 

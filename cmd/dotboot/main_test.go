@@ -49,3 +49,22 @@ func TestVersionStringIncluiAVersao(t *testing.T) {
 		t.Errorf("versionString = %q, esperado começar por \"dotboot v1.2.3\"", got)
 	}
 }
+
+func TestWantsHelp(t *testing.T) {
+	tests := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"-h"}, true},
+		{[]string{"https://youtu.be/x", "--help"}, true},
+		{[]string{"-o", "x", "https://youtu.be/x"}, false},
+		// Depois de "--" é um argumento, não um pedido de ajuda.
+		{[]string{"--", "-h"}, false},
+		{nil, false},
+	}
+	for _, tt := range tests {
+		if got := wantsHelp(tt.args); got != tt.want {
+			t.Errorf("wantsHelp(%v) = %v, esperado %v", tt.args, got, tt.want)
+		}
+	}
+}

@@ -215,6 +215,17 @@ install_uv() {
 }
 
 install_audio_separator() {
+	# O diffq, uma dependência do Demucs, só existe em código fonte: sem um
+	# compilador C a instalação falha a meio, depois de descarregar o PyTorch.
+	if ! have cc && ! have gcc; then
+		if [ "$os" = Darwin ]; then
+			fail "falta um compilador C: xcode-select --install"
+		else
+			fail "falta um compilador C: sudo apt install build-essential (ou o equivalente da tua distribuição)"
+		fi
+		exit 1
+	fi
+
 	local uv=uv
 	if ! have uv; then
 		install_uv
@@ -230,8 +241,10 @@ install_audio_separator() {
 	fi
 	# ${extra[@]+…}: com set -u, o bash 3.2 do macOS trata um array vazio
 	# como variável não definida.
+	# O audio-separator 0.47 importa o audioread sem o declarar (o librosa
+	# deixou de o trazer): sem o --with, falha logo ao arrancar.
 	UV_TOOL_BIN_DIR=$BINDIR "$uv" tool install --force --python 3.12 ${extra[@]+"${extra[@]}"} \
-		"audio-separator[cpu]==$AUDIO_SEPARATOR_VERSION"
+		--with audioread "audio-separator[cpu]==$AUDIO_SEPARATOR_VERSION"
 	ok "audio-separator $AUDIO_SEPARATOR_VERSION em $BINDIR (os modelos descarregam-se no primeiro uso)"
 }
 
@@ -243,7 +256,7 @@ fi
 mkdir -p "$BINDIR"
 
 if [ "$stems" = 1 ]; then
-	step "Separação de stems (audio-separator, ~1GB com o PyTorch)"
+	step "Separação de stems (audio-separator, ~1.5GB com o PyTorch)"
 	install_audio_separator
 	path_hint
 	exit 0

@@ -147,3 +147,59 @@ CMD ["air", \
   "--build.exclude_dir", "tmp", \
   "--build.include_ext", "go", \
   "--misc.clean_on_exit", "true"]
+
+# ============================================================
+# Stems deps stage: o ambiente Python da separação de stems
+# ============================================================
+# Python 3.12, a versão que o audio-separator e o PyTorch suportam melhor.
+# O diffq (dependência do Demucs) só existe em código fonte, por isso este
+# estágio tem compilador; a imagem final recebe só o venv, sem o gcc.
+FROM python:3.12-slim-trixie AS stems-deps
+
+ARG AUDIO_SEPARATOR_VERSION=0.47.1
+# O audio-separator 0.47 importa o audioread sem o declarar como dependência
+# (o librosa deixou de o trazer): sem ele, falha logo ao arrancar.
+ARG AUDIOREAD_VERSION=3.1.0
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/stems
+ENV PATH=/opt/stems/bin:$PATH
+
+# O PyTorch vem do índice CPU: o do PyPI traz ~3GB de bibliotecas CUDA que,
+# sem uma GPU NVIDIA, não servem para nada.
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch && \
+    pip install --no-cache-dir "audio-separator[cpu]==${AUDIO_SEPARATOR_VERSION}" \
+        "audioread==${AUDIOREAD_VERSION}"
+
+# ============================================================
+# Stems stage: separação de música em pistas (dotboot stems)
+# ============================================================
+# Imagem à parte (~3GB: o PyTorch e as bibliotecas de áudio): o bot não precisa dela.
+FROM python:3.12-slim-trixie AS stems
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=stems-deps /opt/stems /opt/stems
+ENV PATH=/opt/stems/bin:$PATH
+RUN audio-separator --version
+
+COPY --from=tools /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
+COPY --from=deno /deno /usr/local/bin/deno
+COPY --from=builder /dotboot /dotboot
+
+# /models com 1777: o wrapper corre o container com o uid de quem o chama, e
+# um volume novo herda as permissões deste diretório.
+RUN useradd --system --uid 10001 --create-home --home-dir /home/dotboot dotboot && \
+    install -d -m 1777 /models
+ENV DOTBOOT_MODELS_DIR=/models
+VOLUME /models
+
+USER dotboot
+WORKDIR /home/dotboot
+ENTRYPOINT ["/dotboot"]
+CMD ["help"]
