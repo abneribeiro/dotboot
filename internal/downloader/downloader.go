@@ -47,8 +47,14 @@ func Run(ctx context.Context, o Options) error {
 	if o.Stdout == nil && o.Stderr == nil {
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			slog.Debug("yt-dlp falhou", "err", err, "output", string(output))
-			return classify(string(output), ctx.Err(), err)
+			dlErr := classify(string(output), ctx.Err(), err)
+			// Sem isto o motivo real (bot-check, 403, formato em falta…) só
+			// aparecia em debug, e o log dizia apenas "exit status 1". Um
+			// cancelamento não é uma falha do yt-dlp.
+			if dlErr.Kind != ErrCanceled {
+				slog.Warn("yt-dlp falhou", "err", err, "output", tail(string(output), 2048))
+			}
+			return dlErr
 		}
 		return nil
 	}
@@ -73,6 +79,8 @@ func Run(ctx context.Context, o Options) error {
 type DiscordOpts struct {
 	MaxFileSize int64 // limite de upload em bytes, já com margens aplicadas
 	TempDir     string
+	CookiesFile string // ver Options.CookiesFile; copiado para o WorkDir
+	JSRuntimes  string // ver Options.JSRuntimes
 }
 
 // Result descreve o ficheiro pronto a enviar para o Discord.
@@ -132,6 +140,11 @@ func DownloadForDiscord(ctx context.Context, url string, sec *Section, o Discord
 
 	pathFile := filepath.Join(workDir, "final.path")
 
+	cookies, err := copyCookies(o.CookiesFile, workDir)
+	if err != nil {
+		return res, err
+	}
+
 	opts := Options{
 		URLs: []string{url},
 		// %(title).80B trunca a 80 bytes (não runes), o que é seguro com
@@ -146,6 +159,8 @@ func DownloadForDiscord(ctx context.Context, url string, sec *Section, o Discord
 		MergeFormat:       "mp4",
 		Quiet:             true,
 		Section:           sec,
+		CookiesFile:       cookies,
+		JSRuntimes:        o.JSRuntimes,
 	}
 
 	if err := Run(ctx, opts); err != nil {
@@ -190,6 +205,70 @@ func ensureMP4WithinBudget(ctx context.Context, path string, maxSize int64) (str
 	return EnsureMP4(ctx, path, nil)
 }
 
+// AudioOpts parametriza um DownloadAudio.
+type AudioOpts struct {
+	CookiesFile string // ver Options.CookiesFile; copiado para o workDir
+	JSRuntimes  string // ver Options.JSRuntimes
+
+	// Stdout/Stderr recebem o progresso do yt-dlp em direto (CLI).
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+// DownloadAudio descarrega só o áudio de url para workDir, em WAV — sem
+// perdas, que é o que a separação de stems precisa à entrada — e devolve o
+// caminho do ficheiro. Ao contrário do DownloadForDiscord, o workDir é do
+// chamador, que o cria e remove.
+func DownloadAudio(ctx context.Context, url string, sec *Section, workDir string, o AudioOpts) (string, error) {
+	pathFile := filepath.Join(workDir, "final.path")
+
+	cookies, err := copyCookies(o.CookiesFile, workDir)
+	if err != nil {
+		return "", err
+	}
+
+	opts := Options{
+		URLs:           []string{url},
+		OutputTemplate: filepath.Join(workDir, "%(title).150B.%(ext)s"),
+		Format:         "ba/b",
+		ExtractAudio:   "wav",
+		NoPlaylist:     true,
+		PrintToFile:    pathFile,
+		Section:        sec,
+		CookiesFile:    cookies,
+		JSRuntimes:     o.JSRuntimes,
+		Stdout:         o.Stdout,
+		Stderr:         o.Stderr,
+	}
+	if err := Run(ctx, opts); err != nil {
+		return "", err
+	}
+	return finalFile(workDir, pathFile)
+}
+
+// cookiesFileName é o nome da cópia dos cookies dentro do diretório de
+// trabalho; o finalFile ignora-a.
+const cookiesFileName = "cookies.txt"
+
+// copyCookies copia o ficheiro de cookies para workDir e devolve o caminho da
+// cópia ("" quando não há cookies). O yt-dlp reescreve o ficheiro no fim de
+// cada execução: com vários downloads em paralelo a escrever no original, um
+// acabaria por o deixar truncado — e o 0600 é porque são credenciais.
+func copyCookies(src, workDir string) (string, error) {
+	if src == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return "", fmt.Errorf("não foi possível ler o ficheiro de cookies: %w", err)
+	}
+	dst := filepath.Join(workDir, cookiesFileName)
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return "", fmt.Errorf("não foi possível copiar o ficheiro de cookies: %w", err)
+	}
+	return dst, nil
+}
+
 // fragmentPattern identifica os ficheiros por-formato que o yt-dlp deixa
 // quando um merge é interrompido (ex: "Video.f299.mp4").
 var fragmentPattern = regexp.MustCompile(`\.f\d+\.[^.]+$`)
@@ -219,7 +298,7 @@ func finalFile(workDir, pathFile string) (string, error) {
 	var bestSize int64 = -1
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || name == filepath.Base(pathFile) {
+		if e.IsDir() || name == filepath.Base(pathFile) || name == cookiesFileName {
 			continue
 		}
 		// Descarta trabalho intermédio do yt-dlp.

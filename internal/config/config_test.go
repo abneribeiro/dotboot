@@ -2,6 +2,9 @@ package config
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -97,6 +100,119 @@ func TestLoadFromInvalidValues(t *testing.T) {
 		{"concorrência zero", map[string]string{"DOTBOOT_MAX_CONCURRENT": "0"}},
 		{"grace inválido", map[string]string{"DOTBOOT_SHUTDOWN_GRACE": "depois"}},
 		{"nível de log desconhecido", map[string]string{"DOTBOOT_LOG_LEVEL": "verboso"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := loadFrom(envMap(tt.env)); err == nil {
+				t.Errorf("loadFrom(%v) devia devolver erro", tt.env)
+			}
+		})
+	}
+}
+
+func TestLoadFromDefaultsNovos(t *testing.T) {
+	cfg, err := loadFrom(envMap(map[string]string{"HOME": "/home/ana"}))
+	if err != nil {
+		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
+	}
+	if cfg.MaxPerUser != 2 {
+		t.Errorf("MaxPerUser = %d, esperado 2", cfg.MaxPerUser)
+	}
+	if cfg.ModelsDir != "/home/ana/.cache/dotboot/models" {
+		t.Errorf("ModelsDir = %q, esperado a cache do utilizador", cfg.ModelsDir)
+	}
+	if cfg.CookiesFile != "" || cfg.JSRuntimes != "" || cfg.AllowedDomains != nil {
+		t.Errorf("cookies/js/domínios deviam vir vazios: %q %q %v", cfg.CookiesFile, cfg.JSRuntimes, cfg.AllowedDomains)
+	}
+
+	// O XDG_CACHE_HOME tem prioridade, como nas outras ferramentas.
+	cfg, err = loadFrom(envMap(map[string]string{"HOME": "/home/ana", "XDG_CACHE_HOME": "/cache"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ModelsDir != "/cache/dotboot/models" {
+		t.Errorf("ModelsDir = %q, esperado /cache/dotboot/models", cfg.ModelsDir)
+	}
+}
+
+func TestLoadFromOverridesNovos(t *testing.T) {
+	cookies := filepath.Join(t.TempDir(), "cookies.txt")
+	if err := os.WriteFile(cookies, []byte("# Netscape HTTP Cookie File\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFrom(envMap(map[string]string{
+		"DOTBOOT_COOKIES_FILE":    cookies,
+		"DOTBOOT_JS_RUNTIMES":     "node",
+		"DOTBOOT_ALLOWED_DOMAINS": " YouTube.com, *.x.com ,youtu.be.,",
+		"DOTBOOT_MAX_PER_USER":    "1",
+		"DOTBOOT_MODELS_DIR":      "/modelos",
+	}))
+	if err != nil {
+		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
+	}
+	if cfg.CookiesFile != cookies {
+		t.Errorf("CookiesFile = %q, esperado %q", cfg.CookiesFile, cookies)
+	}
+	if cfg.JSRuntimes != "node" {
+		t.Errorf("JSRuntimes = %q, esperado node", cfg.JSRuntimes)
+	}
+	if want := []string{"youtube.com", "x.com", "youtu.be"}; !slices.Equal(cfg.AllowedDomains, want) {
+		t.Errorf("AllowedDomains = %v, esperado %v", cfg.AllowedDomains, want)
+	}
+	if cfg.MaxPerUser != 1 {
+		t.Errorf("MaxPerUser = %d, esperado 1", cfg.MaxPerUser)
+	}
+	if cfg.ModelsDir != "/modelos" {
+		t.Errorf("ModelsDir = %q, esperado /modelos", cfg.ModelsDir)
+	}
+}
+
+// Num .env o ~ chega literal: sem expansão, o CLI criava uma pasta chamada "~".
+func TestLoadFromExpandeTil(t *testing.T) {
+	cfg, err := loadFrom(envMap(map[string]string{
+		"HOME":               "/home/ana",
+		"DOTBOOT_OUTPUT_DIR": "~/Videos",
+		"DOTBOOT_TEMP_DIR":   "~",
+		"DOTBOOT_MODELS_DIR": "~/modelos",
+	}))
+	if err != nil {
+		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
+	}
+	if cfg.OutputDir != "/home/ana/Videos" {
+		t.Errorf("OutputDir = %q, esperado /home/ana/Videos", cfg.OutputDir)
+	}
+	if cfg.TempDir != "/home/ana" {
+		t.Errorf("TempDir = %q, esperado /home/ana", cfg.TempDir)
+	}
+	if cfg.ModelsDir != "/home/ana/modelos" {
+		t.Errorf("ModelsDir = %q, esperado /home/ana/modelos", cfg.ModelsDir)
+	}
+
+	// Só o ~ inicial é especial: "~ana" ou um ~ a meio ficam como estão.
+	cfg, err = loadFrom(envMap(map[string]string{"HOME": "/home/ana", "DOTBOOT_OUTPUT_DIR": "/dados/~backup"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OutputDir != "/dados/~backup" {
+		t.Errorf("OutputDir = %q, esperado inalterado", cfg.OutputDir)
+	}
+}
+
+func TestLoadFromInvalidValuesNovos(t *testing.T) {
+	dir := t.TempDir()
+
+	tests := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"por utilizador zero", map[string]string{"DOTBOOT_MAX_PER_USER": "0"}},
+		{"por utilizador não numérico", map[string]string{"DOTBOOT_MAX_PER_USER": "dois"}},
+		{"URL em vez de domínio", map[string]string{"DOTBOOT_ALLOWED_DOMAINS": "https://youtube.com"}},
+		{"lista de domínios vazia", map[string]string{"DOTBOOT_ALLOWED_DOMAINS": " , "}},
+		{"cookies inexistentes", map[string]string{"DOTBOOT_COOKIES_FILE": filepath.Join(dir, "nao-existe.txt")}},
+		{"cookies é uma pasta", map[string]string{"DOTBOOT_COOKIES_FILE": dir}},
 	}
 
 	for _, tt := range tests {

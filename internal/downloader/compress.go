@@ -34,10 +34,11 @@ const (
 // comprimido, quando o orçamento aperta.
 var audioLadder = []int{128, 96, 64}
 
-// heightLadder são as resoluções das tentativas sucessivas. 0 = manter a
-// resolução original. Descer a resolução com o mesmo bitrate-alvo dá menos
-// pixels a codificar e, portanto, um resultado visivelmente melhor.
-var heightLadder = []int{0, 720, 480}
+// resolutionLadder são as resoluções das tentativas sucessivas, medidas no
+// lado menor do vídeo (ver scaleFilter). 0 = manter a resolução original.
+// Descer a resolução com o mesmo bitrate-alvo dá menos pixels a codificar e,
+// portanto, um resultado visivelmente melhor.
+var resolutionLadder = []int{0, 720, 480}
 
 // bitratesFor reparte um orçamento de bytes entre vídeo e áudio para um vídeo
 // com durationSec segundos. Devolve ok=false quando nem com o áudio mais
@@ -80,44 +81,93 @@ func probeDuration(ctx context.Context, path string) (float64, error) {
 	return d, nil
 }
 
-// probeHeight devolve a altura do primeiro fluxo de vídeo, ou 0 se desconhecida.
-func probeHeight(ctx context.Context, path string) int {
+// probeDimensions devolve a largura e a altura do primeiro fluxo de vídeo, ou
+// zeros quando desconhecidas.
+func probeDimensions(ctx context.Context, path string) (width, height int) {
 	out, err := probe(ctx, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=height", "-of", "csv=p=0", path)
+		"-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", path)
 	if err != nil {
-		return 0
+		return 0, 0
 	}
-	h, err := strconv.Atoi(out)
-	if err != nil {
-		return 0
-	}
-	return h
+	return parseDimensions(out)
 }
 
-// encode recodifica inputPath para o bitrate pedido, opcionalmente reduzindo a
-// resolução (height > 0). Devolve o caminho do ficheiro produzido; em caso de
-// erro remove o que tiver sido escrito.
-func encode(ctx context.Context, inputPath, workDir string, attempt, height, videoKbps, audioKbps int) (string, error) {
-	outputPath := filepath.Join(workDir, fmt.Sprintf("compressed_%d.mp4", attempt))
-
-	args := []string{"-i", inputPath}
-	if height > 0 {
-		// -2 mantém a proporção e garante largura par (exigência do x264).
-		args = append(args, "-vf", fmt.Sprintf("scale=-2:%d", height))
+// parseDimensions interpreta o "1920x1080" que o ffprobe escreve com csv=s=x.
+// Qualquer coisa ilegível dá zeros, que o scaleFilter trata como desconhecido.
+func parseDimensions(s string) (width, height int) {
+	w, h, ok := strings.Cut(s, "x")
+	if !ok {
+		return 0, 0
 	}
-	args = append(args,
+	width, errW := strconv.Atoi(strings.TrimSpace(w))
+	height, errH := strconv.Atoi(strings.TrimSpace(h))
+	if errW != nil || errH != nil || width < 0 || height < 0 {
+		return 0, 0
+	}
+	return width, height
+}
+
+// scaleFilter devolve o filtro que reduz o vídeo até o lado menor ter target
+// pixels, ou "" quando não há nada a reduzir (target 0, ou já igual/menor).
+//
+// É o lado menor, e não a altura, que define a resolução: um vídeo vertical
+// 1080x1920 (Shorts, TikTok, Reels) é 1080p, e reduzi-lo a 720 tem de dar
+// 720x1280 — escalar a altura dava 405x720, pior do que o necessário. Com
+// dimensões desconhecidas assume-se um vídeo horizontal.
+func scaleFilter(width, height, target int) string {
+	if target <= 0 {
+		return ""
+	}
+	portrait := width > 0 && height > width
+	short := height
+	if portrait {
+		short = width
+	}
+	if short > 0 && target >= short {
+		return ""
+	}
+	// -2 mantém a proporção e garante uma dimensão par (exigência do x264).
+	if portrait {
+		return fmt.Sprintf("scale=%d:-2", target)
+	}
+	return fmt.Sprintf("scale=-2:%d", target)
+}
+
+// encodeArgs constrói os argumentos do ffmpeg de uma tentativa de compressão.
+// Função pura, como o compatArgs: é aqui que se fixa que a saída é sempre
+// H.264 8 bits + AAC em MP4 — o ensureMP4WithinBudget conta com isso para não
+// converter o mesmo ficheiro duas vezes.
+func encodeArgs(inputPath, outputPath, scale string, videoKbps, audioKbps int) []string {
+	// O -map explícito tem a mesma razão de ser que no compatArgs: legendas ou
+	// fluxos de dados fariam o ffmpeg abortar. O "?" tolera vídeos mudos.
+	args := []string{"-i", inputPath, "-map", "0:v:0", "-map", "0:a:0?"}
+	if scale != "" {
+		args = append(args, "-vf", scale)
+	}
+	return append(args,
 		"-c:v", "libx264",
 		"-b:v", fmt.Sprintf("%dk", videoKbps),
 		// maxrate/bufsize evitam picos que rebentem o orçamento.
 		"-maxrate", fmt.Sprintf("%dk", videoKbps),
 		"-bufsize", fmt.Sprintf("%dk", videoKbps*2),
 		"-preset", compressPreset,
+		// Sem -pix_fmt, uma fonte a 10 bits saía em H.264 High10, que o iPhone
+		// não descodifica (ver mp4PixFmt).
+		"-pix_fmt", mp4PixFmt,
 		"-c:a", "aac",
 		"-b:a", fmt.Sprintf("%dk", audioKbps),
 		"-movflags", "+faststart",
 		"-y",
 		outputPath,
 	)
+}
+
+// encode recodifica inputPath para o bitrate pedido, opcionalmente reduzindo a
+// resolução (scale, ver scaleFilter). Devolve o caminho do ficheiro produzido;
+// em caso de erro remove o que tiver sido escrito.
+func encode(ctx context.Context, inputPath, workDir string, attempt int, scale string, videoKbps, audioKbps int) (string, error) {
+	outputPath := filepath.Join(workDir, fmt.Sprintf("compressed_%d.mp4", attempt))
+	args := encodeArgs(inputPath, outputPath, scale, videoKbps, audioKbps)
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
@@ -160,7 +210,7 @@ func validateAndProcessVideo(ctx context.Context, filePath string, maxSize int64
 	}
 
 	fileSize := info.Size()
-	maxMB := maxSize / mib
+	maxMB := roundMB(maxSize)
 	slog.Info("ficheiro descarregado", "size_bytes", fileSize, "size_mb", fmt.Sprintf("%.2f", float64(fileSize)/mib))
 
 	// Dentro do limite: usa o ficheiro diretamente.
@@ -176,19 +226,21 @@ func validateAndProcessVideo(ctx context.Context, filePath string, maxSize int64
 			Err:  err,
 		}
 	}
-	sourceHeight := probeHeight(ctx, filePath)
+	width, height := probeDimensions(ctx, filePath)
 
 	slog.Info("ficheiro excede o limite, a comprimir",
-		"limit_mb", maxMB, "duration_s", fmt.Sprintf("%.1f", duration), "source_height", sourceHeight)
+		"limit_mb", maxMB, "duration_s", fmt.Sprintf("%.1f", duration), "source_size", fmt.Sprintf("%dx%d", width, height))
 
 	// factor corrige o orçamento entre tentativas: se uma tentativa
 	// ultrapassar o limite, a seguinte pede proporcionalmente menos.
 	factor := muxOverheadFactor
 	attempt := 0
 
-	for _, height := range heightLadder {
-		// Não faz sentido "reduzir" para uma altura maior do que a original.
-		if height > 0 && sourceHeight > 0 && height >= sourceHeight {
+	for _, target := range resolutionLadder {
+		scale := scaleFilter(width, height, target)
+		// Não faz sentido "reduzir" para uma resolução igual ou maior do que a
+		// original: seria repetir a tentativa anterior.
+		if target > 0 && scale == "" {
 			continue
 		}
 
@@ -199,10 +251,10 @@ func validateAndProcessVideo(ctx context.Context, filePath string, maxSize int64
 
 		attempt++
 		slog.Info("tentativa de compressão", "attempt", attempt,
-			"height", height, "video_kbps", videoKbps, "audio_kbps", audioKbps)
+			"scale", scale, "video_kbps", videoKbps, "audio_kbps", audioKbps)
 
 		attemptCtx, cancel := attemptContext(ctx)
-		compressedPath, err := encode(attemptCtx, filePath, workDir, attempt, height, videoKbps, audioKbps)
+		compressedPath, err := encode(attemptCtx, filePath, workDir, attempt, scale, videoKbps, audioKbps)
 		cancel()
 		if err != nil {
 			// Um contexto cancelado não é recuperável nas tentativas seguintes.
@@ -242,12 +294,22 @@ func validateAndProcessVideo(ctx context.Context, filePath string, maxSize int64
 	}
 	requiredKbps := minVideoKbps + audioLadder[len(audioLadder)-1]
 
+	// A mensagem não sugere como contornar o limite: isso depende de quem
+	// chama (o bot fala do recorte com inicio/fim), e este pacote não conhece
+	// o Discord.
 	return filePath, &DownloadError{
 		Kind: ErrTooLarge,
 		Msg: fmt.Sprintf(
-			"o vídeo excede o limite de %dMB: com %s de duração o orçamento só dá ~%d kbps no total, e são precisos pelo menos %d kbps. Usa um recorte com `inicio`/`fim`, ou o modo terminal `dotboot download`.",
+			"o vídeo excede o limite de %dMB: com %s de duração o orçamento só dá ~%d kbps no total, e são precisos pelo menos %d kbps.",
 			maxMB, formatDuration(duration), availableKbps, requiredKbps),
 	}
+}
+
+// roundMB converte bytes em MB para mensagens, arredondando ao mais próximo:
+// o limite chega já sem a margem do envelope (20MB - 256KB), e truncá-lo
+// anunciava "19MB" a quem sabe que o limite do Discord é 20MB.
+func roundMB(bytes int64) int64 {
+	return (bytes + mib/2) / mib
 }
 
 // formatDuration escreve uma duração para mensagens ao utilizador, evitando

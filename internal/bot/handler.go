@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -66,34 +68,121 @@ func extractOptions(opts []*discordgo.ApplicationCommandInteractionDataOption) (
 // interactionUser devolve o username de quem invocou a interação,
 // quer venha de um servidor (Member) quer de uma DM (User).
 func interactionUser(i *discordgo.InteractionCreate) string {
-	if i.Member != nil && i.Member.User != nil {
-		return i.Member.User.Username
-	}
-	if i.User != nil {
-		return i.User.Username
+	if u := interactionAuthor(i); u != nil {
+		return u.Username
 	}
 	return "desconhecido"
 }
 
+// interactionUserID devolve o ID de quem invocou a interação — a chave do
+// limite por utilizador. O username pode mudar; o ID não.
+func interactionUserID(i *discordgo.InteractionCreate) string {
+	if u := interactionAuthor(i); u != nil {
+		return u.ID
+	}
+	return ""
+}
+
+func interactionAuthor(i *discordgo.InteractionCreate) *discordgo.User {
+	if i.Member != nil && i.Member.User != nil {
+		return i.Member.User
+	}
+	return i.User
+}
+
+// userLimiter conta os downloads de cada utilizador, em curso ou em fila,
+// para uma só pessoa não ocupar a fila de todos.
+type userLimiter struct {
+	mu     sync.Mutex
+	max    int
+	active map[string]int
+}
+
+func newUserLimiter(perUser int) *userLimiter {
+	return &userLimiter{max: perUser, active: make(map[string]int)}
+}
+
+// acquire reserva um lugar para o utilizador; false quando já tem max.
+func (l *userLimiter) acquire(userID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.active[userID] >= l.max {
+		return false
+	}
+	l.active[userID]++
+	return true
+}
+
+// release devolve o lugar reservado por acquire.
+func (l *userLimiter) release(userID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.active[userID] <= 1 {
+		delete(l.active, userID)
+		return
+	}
+	l.active[userID]--
+}
+
+// tooLargeHint completa a mensagem de ErrTooLarge do downloader, que não
+// conhece as opções do /baixar.
+const tooLargeHint = "Usa um recorte com `inicio`/`fim`, ou o modo terminal `dotboot download`."
+
 // messageForError traduz erros do downloader em mensagens para o utilizador.
 func messageForError(err error) string {
 	var dlErr *downloader.DownloadError
-	if errors.As(err, &dlErr) {
-		switch dlErr.Kind {
-		case downloader.ErrTooLarge:
-			// O downloader já explica o porquê (duração, bitrate necessário).
-			return fmt.Sprintf("❌ %s", dlErr)
-		case downloader.ErrLiveNoDVR:
-			return "❌ Esta live não suporta DVR ou ainda não começou. Não é possível fazer o recorte."
-		case downloader.ErrTimeout:
-			return "❌ O download demorou demasiado tempo. Tenta novamente com um vídeo mais curto."
-		case downloader.ErrUnsupportedURL:
-			return "❌ URL não suportado ou não contém vídeo. Verifica se o link está correto."
-		case downloader.ErrPrivate, downloader.ErrUnavailable:
-			return "❌ Vídeo privado ou indisponível. Verifica as permissões do conteúdo."
-		}
+	if !errors.As(err, &dlErr) {
+		// Erros fora do downloader (disco, ffprobe…) são internos: os
+		// detalhes, com caminhos do servidor, ficam no log e não no canal.
+		return "❌ Não foi possível descarregar o vídeo devido a um erro interno."
 	}
-	return fmt.Sprintf("❌ Não foi possível descarregar o vídeo: %v", err)
+
+	switch dlErr.Kind {
+	case downloader.ErrTooLarge:
+		// O downloader já explica o porquê (duração, bitrate necessário).
+		return fmt.Sprintf("❌ %s %s", dlErr, tooLargeHint)
+	case downloader.ErrLiveNoDVR:
+		return "❌ Esta live não suporta DVR ou ainda não começou. Não é possível fazer o recorte."
+	case downloader.ErrTimeout:
+		return "❌ O download demorou demasiado tempo. Tenta novamente com um vídeo mais curto."
+	case downloader.ErrUnsupportedURL:
+		return "❌ URL não suportado ou não contém vídeo. Verifica se o link está correto."
+	case downloader.ErrPrivate, downloader.ErrUnavailable:
+		return "❌ Vídeo privado ou indisponível. Verifica as permissões do conteúdo."
+	case downloader.ErrLoginRequired:
+		return "❌ O site pediu login ou verificação (ex: «confirma que não és um robô» no YouTube, ou restrição de idade). " +
+			"Quem gere o bot pode configurar cookies em `DOTBOOT_COOKIES_FILE`."
+	case downloader.ErrRateLimited:
+		return "❌ O site está a limitar os pedidos deste bot. Tenta novamente daqui a alguns minutos."
+	case downloader.ErrCanceled:
+		return "❌ O bot está a reiniciar e o download foi cancelado. Tenta novamente daqui a pouco."
+	}
+
+	// Sem classificação, a linha de erro do yt-dlp é o que melhor explica a
+	// falha — muito mais do que "exit status 1".
+	if detail := dlErr.Detail(); detail != "" {
+		return "❌ Não foi possível descarregar o vídeo:\n> " + detail
+	}
+	return "❌ Não foi possível descarregar o vídeo."
+}
+
+// messageForURLError explica porque é que um URL foi recusado.
+func messageForURLError(err error, allowed []string) string {
+	switch {
+	case errors.Is(err, downloader.ErrDomainNotAllowed):
+		return fmt.Sprintf("❌ Este bot só aceita links de: %s.", strings.Join(allowed, ", "))
+	case errors.Is(err, downloader.ErrNotPublic):
+		return "❌ Esse endereço não é um site público."
+	default:
+		return "❌ URL inválido. Usa um link completo (ex: https://youtube.com/...)"
+	}
+}
+
+// displayMB converte o limite em bytes em MB para mensagens, arredondando: o
+// limite chega sem a margem do envelope e truncá-lo anunciava "19MB" num
+// servidor de 20MB.
+func displayMB(bytes int64) int {
+	return int((bytes + mib/2) / mib)
 }
 
 // handleInteraction processa o comando /baixar: valida o input, responde de
@@ -112,7 +201,7 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		"guild_id", i.GuildID,
 	)
 
-	if b.closing.Load() {
+	if b.isClosing() {
 		b.respondWithError(s, i, "❌ O bot está a encerrar. Tenta novamente daqui a pouco.")
 		return
 	}
@@ -123,8 +212,11 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		return
 	}
 
-	if err := downloader.ValidateURL(url); err != nil {
-		b.respondWithError(s, i, "❌ URL inválido. Usa um link completo (ex: https://youtube.com/...)")
+	// Qualquer membro do servidor escolhe o URL que o bot vai buscar: a rede
+	// local do servidor onde o bot corre tem de ficar fora de alcance.
+	if err := downloader.ValidatePublicURL(url, b.cfg.AllowedDomains); err != nil {
+		b.log.Info("URL recusado", "interaction_id", i.ID, "url", url, "err", err)
+		b.respondWithError(s, i, messageForURLError(err, b.cfg.AllowedDomains))
 		return
 	}
 	if (startTime != "") != (endTime != "") {
@@ -141,6 +233,13 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		sec = &downloader.Section{Start: startTime, End: endTime}
 	}
 
+	userID := interactionUserID(i)
+	if !b.users.acquire(userID) {
+		b.respondWithError(s, i, fmt.Sprintf(
+			"❌ Já tens %d download(s) em curso ou na fila. Espera que terminem antes de pedires outro.", b.cfg.MaxPerUser))
+		return
+	}
+
 	b.log.Info("comando /baixar aceite", "interaction_id", i.ID, "url", url, "inicio", startTime, "fim", endTime)
 
 	// Responde imediatamente de forma diferida — o Discord dá apenas
@@ -149,6 +248,7 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 	if err != nil {
+		b.users.release(userID)
 		b.log.Error("erro ao enviar resposta diferida", "interaction_id", i.ID, "err", err)
 		return
 	}
@@ -158,9 +258,14 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	maxSize := b.uploadLimit(s, i.GuildID)
 
 	// wg.Add antes da goroutine para o encerramento contar trabalho em fila.
-	b.wg.Add(1)
+	if !b.track() {
+		b.users.release(userID)
+		b.editWithError(s, i, "❌ O bot está a encerrar. Tenta novamente daqui a pouco.")
+		return
+	}
 	go func() {
 		defer b.wg.Done()
+		defer b.users.release(userID)
 
 		// O token da interação diferida vale 15 minutos: esperar mais do que
 		// isso na fila seria trabalhar para uma resposta que já não pode ser
@@ -182,7 +287,10 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 
 		budget := time.Until(deadline)
 		if budget <= 0 {
+			// O prazo já desconta a reserva do upload, por isso o token ainda
+			// é válido para avisar quem pediu — sem isto ficava "a pensar…".
 			b.log.Warn("prazo da interação esgotado antes do download", "interaction_id", i.ID)
+			b.editWithError(s, i, "❌ O pedido expirou enquanto esperava na fila. Tenta novamente.")
 			return
 		}
 		if budget > b.cfg.DownloadTimeout {
@@ -198,13 +306,15 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 // processDownload gere o ciclo completo: download, upload e limpeza.
 // maxSize é o limite de upload já resolvido para este servidor.
 func (b *Bot) processDownload(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, url string, sec *downloader.Section, maxSize int64) {
-	maxMB := int(maxSize / (1024 * 1024))
+	maxMB := displayMB(maxSize)
 	b.log.Info("a iniciar processamento de download",
 		"interaction_id", i.ID, "url", url, "limit_mb", maxMB)
 
 	res, err := downloader.DownloadForDiscord(ctx, url, sec, downloader.DiscordOpts{
 		MaxFileSize: maxSize,
 		TempDir:     b.cfg.TempDir,
+		CookiesFile: b.cfg.CookiesFile,
+		JSRuntimes:  b.cfg.JSRuntimes,
 	})
 
 	// Um único RemoveAll limpa o ficheiro final, os fragmentos, os .part e

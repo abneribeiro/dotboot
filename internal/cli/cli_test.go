@@ -3,11 +3,15 @@ package cli
 import (
 	"context"
 	"errors"
+	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"dotboot/internal/downloader"
 )
 
 func TestParseArgsOutputDirPrecedence(t *testing.T) {
@@ -95,22 +99,15 @@ func TestParseArgsQualitySort(t *testing.T) {
 	if o.formatSort != "" {
 		t.Errorf("formatSort = %q, esperado vazio sem -q", o.formatSort)
 	}
-	if o.format != "" {
-		t.Errorf("format = %q, esperado vazio sem -q", o.format)
-	}
 
-	// -q 720 traduz-se na ordenação por resolução preferida.
+	// -q 720 traduz-se em res:720, que o yt-dlp trata como limite com
+	// fallback e mede no lado menor — 720x1280 num vídeo vertical.
 	o, err = parseArgs([]string{"-q", "720", "https://youtu.be/abc"}, "")
 	if err != nil {
 		t.Fatalf("parseArgs devolveu erro inesperado: %v", err)
 	}
 	if o.formatSort != "res:720" {
 		t.Errorf("formatSort = %q, esperado res:720", o.formatSort)
-	}
-	// O -q é anunciado como altura MÁXIMA, por isso tem de produzir também
-	// um filtro -f — só a ordenação seria apenas uma preferência.
-	if !strings.Contains(o.format, "height<=?720") {
-		t.Errorf("format = %q, esperado um limite de altura", o.format)
 	}
 }
 
@@ -146,20 +143,77 @@ func TestValidateBatchFile(t *testing.T) {
 	}
 }
 
-// O flag stdlib para no primeiro argumento não-flag: flags depois dos URLs
-// são tratadas como URLs. Este teste documenta esse comportamento.
+// O flag da stdlib para no primeiro argumento que não é flag, e um "-o"
+// depois do URL era validado como URL. As flags valem em qualquer posição.
 func TestParseArgsFlagsAfterURLs(t *testing.T) {
-	_, err := parseArgs([]string{"https://youtu.be/a", "-o", "/videos"}, "")
-	if err == nil {
-		t.Error("parseArgs devia rejeitar '-o' posicionado depois do URL (validado como URL inválido)")
-	}
-
-	o, err := parseArgs([]string{"-o", "/videos", "https://youtu.be/a", "https://youtu.be/b"}, "")
+	o, err := parseArgs([]string{"https://youtu.be/a", "-o", "/videos", "https://youtu.be/b", "-q", "720"}, "")
 	if err != nil {
 		t.Fatalf("parseArgs devolveu erro inesperado: %v", err)
 	}
+	if o.outputDir != "/videos" {
+		t.Errorf("outputDir = %q, esperado /videos", o.outputDir)
+	}
+	if o.formatSort != "res:720" {
+		t.Errorf("formatSort = %q, esperado res:720", o.formatSort)
+	}
 	if !slices.Equal(o.urls, []string{"https://youtu.be/a", "https://youtu.be/b"}) {
 		t.Errorf("urls = %v", o.urls)
+	}
+}
+
+func TestParseInterspersed(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantPos  []string
+		wantFlag string
+	}{
+		{"só posicionais", []string{"a", "b"}, []string{"a", "b"}, ""},
+		{"flag antes", []string{"-x", "1", "a"}, []string{"a"}, "1"},
+		{"flag no meio", []string{"a", "-x", "1", "b"}, []string{"a", "b"}, "1"},
+		{"flag no fim", []string{"a", "b", "-x", "1"}, []string{"a", "b"}, "1"},
+		// Depois de "--" nada é flag, nem o que começa por "-".
+		{"depois de -- tudo é posicional", []string{"a", "--", "-x", "1"}, []string{"a", "-x", "1"}, ""},
+		{"-- no início", []string{"--", "-x"}, []string{"-x"}, ""},
+		{"vazio", nil, nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("t", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			x := fs.String("x", "", "")
+
+			pos, err := parseInterspersed(fs, tt.args)
+			if err != nil {
+				t.Fatalf("parseInterspersed(%v) devolveu erro: %v", tt.args, err)
+			}
+			if !slices.Equal(pos, tt.wantPos) {
+				t.Errorf("posicionais = %v, esperado %v", pos, tt.wantPos)
+			}
+			if *x != tt.wantFlag {
+				t.Errorf("-x = %q, esperado %q", *x, tt.wantFlag)
+			}
+		})
+	}
+}
+
+func TestOutputTemplate(t *testing.T) {
+	full := outputTemplate("/videos", nil)
+	if full != "/videos/%(title)s [%(id)s].%(ext)s" {
+		t.Errorf("outputTemplate sem recorte = %q", full)
+	}
+
+	// Com o mesmo nome do vídeo completo, o yt-dlp dizia "already
+	// downloaded" e o archive ficava com o recorte no lugar do vídeo.
+	trimmed := outputTemplate("/videos", &downloader.Section{Start: "01:30", End: "00:02:00"})
+	if trimmed == full {
+		t.Fatal("o recorte não pode ter o mesmo nome do vídeo completo")
+	}
+	if want := "/videos/%(title)s [%(id)s] (01.30-00.02.00).%(ext)s"; trimmed != want {
+		t.Errorf("outputTemplate com recorte = %q, esperado %q", trimmed, want)
+	}
+	if strings.Contains(filepath.Base(trimmed), ":") {
+		t.Errorf("o nome não pode ter ':' (inválido no Windows/macOS): %q", trimmed)
 	}
 }
 
@@ -185,15 +239,21 @@ func TestCountArchive(t *testing.T) {
 
 func TestParseArgsFormato(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    []string
-		wantMP4 bool
-		wantErr bool
+		name      string
+		args      []string
+		wantMode  string
+		wantAudio bool
+		wantErr   bool
 	}{
-		{"omissão garante mp4", []string{"https://youtu.be/x"}, true, false},
-		{"mp4 explícito", []string{"-formato", "mp4", "https://youtu.be/x"}, true, false},
-		{"original desliga a conversão", []string{"-formato", "original", "https://youtu.be/x"}, false, false},
-		{"valor inválido", []string{"-formato", "webm", "https://youtu.be/x"}, false, true},
+		{"omissão garante mp4", []string{"https://youtu.be/x"}, "mp4", false, false},
+		{"mp4 explícito", []string{"-formato", "mp4", "https://youtu.be/x"}, "mp4", false, false},
+		{"original desliga a conversão", []string{"-formato", "original", "https://youtu.be/x"}, "original", false, false},
+		{"mp3 guarda só o áudio", []string{"-formato", "mp3", "https://youtu.be/x"}, "mp3", true, false},
+		{"m4a guarda só o áudio", []string{"-formato", "m4a", "https://youtu.be/x"}, "m4a", true, false},
+		{"valor inválido", []string{"-formato", "webm", "https://youtu.be/x"}, "", false, true},
+		// A resolução não tem significado num ficheiro só de áudio.
+		{"-q com áudio é recusado", []string{"-formato", "mp3", "-q", "720", "https://youtu.be/x"}, "", false, true},
+		{"-q best com áudio é aceite", []string{"-formato", "mp3", "-q", "best", "https://youtu.be/x"}, "mp3", true, false},
 	}
 
 	for _, tt := range tests {
@@ -205,10 +265,29 @@ func TestParseArgsFormato(t *testing.T) {
 			if tt.wantErr {
 				return
 			}
-			if o.mp4 != tt.wantMP4 {
-				t.Errorf("mp4 = %v, esperado %v", o.mp4, tt.wantMP4)
+			if o.mode != tt.wantMode {
+				t.Errorf("mode = %q, esperado %q", o.mode, tt.wantMode)
+			}
+			if o.audio() != tt.wantAudio {
+				t.Errorf("audio() = %v, esperado %v", o.audio(), tt.wantAudio)
 			}
 		})
+	}
+}
+
+func TestParseArgsCookies(t *testing.T) {
+	cookies := batchFile(t, "# Netscape HTTP Cookie File\n")
+
+	o, err := parseArgs([]string{"-cookies", cookies, "https://youtu.be/x"}, "")
+	if err != nil {
+		t.Fatalf("parseArgs devolveu erro inesperado: %v", err)
+	}
+	if o.cookies != cookies {
+		t.Errorf("cookies = %q, esperado %q", o.cookies, cookies)
+	}
+
+	if _, err := parseArgs([]string{"-cookies", "/nao/existe.txt", "https://youtu.be/x"}, ""); err == nil {
+		t.Error("parseArgs devia rejeitar um ficheiro de cookies inexistente")
 	}
 }
 
@@ -255,8 +334,9 @@ func TestPrintedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A lista acumula entre execuções: o mesmo caminho aparece uma só vez.
 	got := printedPaths(listFile)
-	want := []string{existing, existing}
+	want := []string{existing}
 	if len(got) != len(want) {
 		t.Fatalf("printedPaths = %v, esperado %v", got, want)
 	}
@@ -280,5 +360,46 @@ func TestPrintedPathsFicheiroInexistente(t *testing.T) {
 func TestEnsurePlayableSemPathFile(t *testing.T) {
 	if err := ensurePlayable(context.Background(), ""); err != nil {
 		t.Errorf("ensurePlayable(\"\") = %v, esperado nil", err)
+	}
+}
+
+// Sem nada pendente (tudo já convertido, ou só ficheiros que entretanto
+// desapareceram), a lista de pendentes é apagada: não pode crescer para
+// sempre nem obrigar a reprocessar o mesmo em cada execução.
+func TestEnsurePlayableApagaPendentesResolvidos(t *testing.T) {
+	dir := t.TempDir()
+	pending := filepath.Join(dir, pendingFileName)
+	if err := os.WriteFile(pending, []byte(filepath.Join(dir, "convertido-e-apagado.webm")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensurePlayable(context.Background(), pending); err != nil {
+		t.Fatalf("ensurePlayable = %v, esperado nil", err)
+	}
+	if _, err := os.Stat(pending); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a lista de pendentes devia ter sido apagada (stat: %v)", err)
+	}
+}
+
+// Um CTRL+C antes de chegar a vez de um ficheiro mantém a lista, para a
+// execução seguinte o converter.
+func TestEnsurePlayableInterrompidoMantemPendentes(t *testing.T) {
+	dir := t.TempDir()
+	video := filepath.Join(dir, "video.webm")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pending := filepath.Join(dir, pendingFileName)
+	if err := os.WriteFile(pending, []byte(video+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := ensurePlayable(ctx, pending); !errors.Is(err, ErrPartial) {
+		t.Errorf("ensurePlayable = %v, esperado ErrPartial", err)
+	}
+	if _, err := os.Stat(pending); err != nil {
+		t.Errorf("a lista de pendentes tinha de ficar para a próxima execução: %v", err)
 	}
 }
