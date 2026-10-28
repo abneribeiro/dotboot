@@ -125,11 +125,18 @@ else
 	echo "  ℹ️  Sem Docker: o bot pode correr com \`dotboot bot\` (CLI nativa) ou depois de instalares o Docker."
 fi
 
+# O doctor sai com 1 quando falta algo: o relatório já diz o quê, por isso
+# não interrompe o assistente (e corre fora do make, que juntaria um
+# "*** Error 1" assustador ao relatório).
 step "5/5 Diagnóstico"
 case "$cli" in
 native) "$BINDIR/dotboot" doctor || true ;;
 docker) docker run --rm "$IMAGE" doctor || true ;;
-*) if [ "$go_ok" = 1 ]; then make doctor || true; fi ;;
+*)
+	if [ "$go_ok" = 1 ] && make build >/dev/null; then
+		bin/dotboot doctor || true
+	fi
+	;;
 esac
 
 echo

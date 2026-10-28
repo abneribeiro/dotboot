@@ -3,10 +3,11 @@ services:
     # O mesmo nome que o `make docker-build` e o wrapper da CLI usam: uma só
     # imagem, em vez de uma para o bot e outra (desatualizada) para a CLI.
     image: dotboot:latest
+    # Sem `network: host` no build: o Compose 5 exige um privilégio extra
+    # para isso (--allow=network.host) e o build não precisa dele.
     build:
       context: .
       target: production
-      network: host
       args:
         VERSION: ${DOTBOOT_VERSION:-dev}
         COMMIT: ${DOTBOOT_COMMIT:-}
@@ -42,7 +43,6 @@ services:
     build:
       context: .
       target: development
-      network: host
     env_file: .env
     init: true
     stop_grace_period: 45s
