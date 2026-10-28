@@ -1,78 +1,122 @@
 # dotboot — Discord Video Bot + Downloader CLI
 
-Bot de Discord escrito em Go que descarrega vídeos de redes sociais (YouTube, X/Twitter, Instagram, Facebook e qualquer site suportado pelo **yt-dlp**) e faz upload diretamente no canal com o comando `/baixar`. Inclui também um **modo terminal** (`dotboot download`) para descarregar vídeos, playlists e canais inteiros para uma pasta local, sem os limites do Discord.
+Bot de Discord escrito em Go que descarrega vídeos de redes sociais (YouTube, X/Twitter, Instagram, TikTok, Facebook e qualquer site suportado pelo **yt-dlp**) e faz upload diretamente no canal com o comando `/baixar`. Inclui também uma **CLI** para descarregar vídeos, playlists e canais inteiros para uma pasta local, sem os limites do Discord, e para **separar músicas em pistas** (vozes, bateria, baixo, guitarra, piano).
 
 ## ✨ Funcionalidades
 
 ### Bot Discord (`dotboot bot`)
 - 📥 Download de vídeos de qualquer site suportado pelo yt-dlp
-- 📱 Anexos sempre em MP4 (H.264 + AAC), que tocam inline no Discord e no iPhone
+- 📱 Anexos sempre em MP4 (H.264 8 bits + AAC), que tocam inline no Discord e no iPhone
 - ✂️ Recorte de vídeos com timestamps (`inicio` e `fim`)
 - 📏 Limite de upload detetado por servidor (20MB sem boost, 50MB no Nível 2,
   100MB no Nível 3) — sem recomprimir à toa em servidores impulsionados
 - 🗜️ Compressão dirigida ao tamanho: o bitrate é calculado a partir da duração
-  e do limite, reduzindo a resolução até o vídeo caber
-- 🚦 Limite de downloads simultâneos configurável
-- 🔄 Retry automático com backoff exponencial
+  e do limite, reduzindo a resolução (pelo lado menor, por isso os vídeos
+  verticais ficam nítidos) até o vídeo caber
+- 🚦 Limite de downloads simultâneos e por utilizador
+- 🛡️ Recusa endereços da rede local; allowlist de domínios opcional
+- 🍪 Cookies opcionais para a verificação "não és um robô" do YouTube
+- 💬 Erros explicados: quando o site recusa, a mensagem diz porquê
 - 🛑 Encerramento gracioso: downloads em curso terminam antes do shutdown
+- ❤️ Healthcheck real: o container só está *healthy* com o Discord ligado
 
-### Modo CLI (`dotboot download`)
+### CLI (`dotboot download`)
 - 📱 **Sempre MP4 (H.264 + AAC)** — o formato que o iPhone, o iOS Fotos e o
-  Android abrem sem qualquer conversão. Nunca sai `.webm` nem `.mkv`
-  (`-formato original` desliga a garantia, se preferires o ficheiro cru)
-- 🎞️ Melhor qualidade disponível por omissão — sem limite de tamanho nem
-  compressão; a flag `-q` limita a resolução quando quiseres (ex: `-q 720`)
+  Android abrem sem qualquer conversão (`-formato original` desliga a garantia)
+- 🎵 **Só o áudio** em MP3 ou M4A, com título e capa (`-formato mp3`)
+- 🎞️ Melhor qualidade disponível por omissão; `-q 720` limita a resolução
+  (também em vídeos verticais: dá 720x1280)
 - 📜 Playlists e canais inteiros num só comando
 - 📄 Ficheiro de URLs (`-a urls.txt`) e vários URLs de uma vez
-- ⏯️ **Continuar**: re-executar o mesmo comando salta vídeos já descarregados
-  (registo em `.dotboot-archive.txt`) e retoma downloads interrompidos (`.part`)
-- 📁 Caminho base por variável de ambiente (`DOTBOOT_OUTPUT_DIR`); a flag `-o`
-  escolhe o destino — relativo cria uma subpasta dentro da base, absoluto ignora-a
+- ⏯️ **Continuar**: re-executar o mesmo comando salta o que já foi descarregado
+  e retoma o que ficou a meio — incluindo conversões para MP4 interrompidas
+- 📁 Caminho base por variável de ambiente (`DOTBOOT_OUTPUT_DIR`)
 
-## 🚀 Início Rápido
+### Stems (`dotboot stems`)
+- 🎸 Separa uma música (URL ou ficheiro) em **vozes, bateria, baixo,
+  guitarra, piano e outros**
+- 🎤 Modo karaoke: vozes + instrumental, com o melhor modelo para a voz
+- 🎧 Faixa de acompanhamento: `-sem guitarra` gera a música sem a guitarra,
+  para tocar por cima
+
+## 🚀 Instalação
+
+O caminho mais curto, depois de clonar:
+
+```bash
+git clone https://github.com/abneribeiro/dotboot
+cd dotboot
+make setup
+```
+
+O `make setup` é um assistente: cria o `.env` (pede o token do bot sem o
+mostrar), pergunta como queres a CLI, constrói as imagens Docker, arranca o
+bot e no fim corre o `dotboot doctor`, que diz o que falta e como resolver.
+Sem perguntas: `make setup YES=1 CLI=native BOT=1 STEMS=0`.
+
+`make` sozinho mostra todos os comandos.
 
 ### Pré-requisitos
 
-- [Docker](https://docs.docker.com/get-docker/) e [Docker Compose](https://docs.docker.com/compose/install/) — ou, para correr localmente: Go 1.24+, `yt-dlp`, `ffmpeg` e `ffprobe` no PATH
-  (o `ffprobe` vem no pacote do `ffmpeg`; o bot usa-o para medir a duração
-  antes de comprimir)
-- Token de bot do Discord ([Discord Developer Portal](https://discord.com/developers/applications)) — apenas para o modo bot
+- **Bot**: [Docker](https://docs.docker.com/get-docker/) com o plugin compose,
+  e um token de bot do [Discord Developer Portal](https://discord.com/developers/applications)
+- **CLI nativa**: Go (para compilar); o `make deps` instala o resto
+- **CLI via Docker**: só o Docker
 
-### Configuração
+### As quatro formas de instalar a CLI
 
-1. **Clone o repositório:**
-   ```bash
-   git clone <url-do-repositorio>
-   cd dotboot
-   ```
+| Forma | Comando | Precisa de |
+|---|---|---|
+| Nativa, a partir do clone | `make deps && make install` | Go |
+| Via Docker (nada no host) | `make docker-build && make install-docker` | Docker |
+| Release do GitHub | `scripts/install.sh` (ver abaixo) | `gh` autenticado enquanto o repo for privado |
+| `go install` | `go install github.com/abneribeiro/dotboot/cmd/dotboot@latest` | Go |
 
-2. **Configure as variáveis de ambiente:**
-   ```bash
-   cp .env.example .env
-   # Edite o .env e adicione o seu DISCORD_TOKEN
-   ```
+Todas instalam o comando `dotboot` em `~/.local/bin` (muda com
+`make install PREFIX=/usr/local`).
 
-### Produção (bot via Docker)
+**Nativa.** O `make deps` instala o **yt-dlp** e o **deno** em `~/.local/bin`,
+sem sudo, verificando o checksum publicado em cada release, e o **ffmpeg**
+pelo gestor de pacotes do sistema (pede confirmação antes do sudo). O deno é
+o runtime JavaScript com que o yt-dlp resolve os desafios do YouTube; sem
+ele há menos formatos ou erros.
+
+**Via Docker.** O wrapper (`scripts/dotboot-docker`) corre a CLI dentro da
+imagem `dotboot:latest`, com os ficheiros a pertencerem-te. Caminhos
+absolutos (`-o ~/Videos`, um ficheiro de música) são montados no mesmo sítio
+dentro do container; os relativos ficam dentro de `$DOTBOOT_OUTPUT_DIR`
+(default `~/Videos`). Aceita também `dotboot <url>` sem o `download`.
+
+**Release.** Cada tag `vX.Y.Z` publica binários para Linux, macOS e Windows
+(amd64 e arm64). Para instalar a última sem clonar:
 
 ```bash
-# Iniciar o bot
-docker compose up -d --build
+# Enquanto o repo for privado (precisa de: gh auth login)
+gh api repos/abneribeiro/dotboot/contents/scripts/install.sh \
+  -H 'Accept: application/vnd.github.raw' | bash
 
-# Ver logs
-docker compose logs -f videobot
-
-# Parar o bot
-docker compose down
+# Quando for público
+curl -fsSL https://raw.githubusercontent.com/abneribeiro/dotboot/main/scripts/install.sh | bash
 ```
 
-### Desenvolvimento (com live reload)
+O script confere o `checksums.txt` e oferece-se para instalar as dependências.
+
+**go install.** Com o repo privado, o Go precisa de saber que não deve ir ao
+proxy público:
 
 ```bash
-# Iniciar com Air para live reload
-docker compose --profile dev up --build
+gh auth setup-git
+GOPRIVATE=github.com/abneribeiro/* go install github.com/abneribeiro/dotboot/cmd/dotboot@latest
+```
 
-# Ver logs do desenvolvimento
-docker compose logs -f videobot-dev
+### O bot (Docker)
+
+```bash
+make env      # cria/edita o .env (token, servidor de testes, pasta da CLI)
+make up       # constrói e arranca em segundo plano
+make ps       # estado, incluindo o healthcheck
+make logs     # segue os logs
+make down     # para
 ```
 
 ## 🎯 Como Usar
@@ -93,120 +137,88 @@ Use o comando `/baixar` com os seguintes parâmetros:
 
 ### No terminal
 
-`dotboot help` (ou `dotboot download -h`) mostra a ajuda completa.
-
-> As flags têm de vir **antes** dos URLs.
+`dotboot help`, `dotboot download -h` e `dotboot stems -h` mostram a ajuda
+completa. As flags podem vir antes ou depois dos URLs.
 
 ```bash
-# Um vídeo para o diretório atual
-dotboot download https://youtube.com/watch?v=xxxx
+# Um vídeo para o diretório atual (ou para $DOTBOOT_OUTPUT_DIR)
+dotboot download "https://youtube.com/watch?v=xxxx"
 
 # Playlist ou canal inteiro para uma pasta
-dotboot download -o ~/Videos https://youtube.com/playlist?list=yyyy
+dotboot download -o ~/Videos "https://youtube.com/playlist?list=yyyy"
 
 # Ficheiro com um URL por linha
 dotboot download -a urls.txt -o ~/Videos
 
-# Limitar a qualidade a 720p de altura (sem -q descarrega a melhor disponível).
-# Sites que não expõem a resolução dos formatos continuam a funcionar.
-dotboot download -q 720 -o aulas https://youtube.com/watch?v=xxxx
+# Limitar a resolução a 720p (num vídeo vertical dá 720x1280)
+dotboot download -q 720 -o aulas "https://youtube.com/watch?v=xxxx"
 
-# Guardar o ficheiro tal como o site o serve, sem garantir MP4.
-# Pode sair .webm/.mkv (AV1/VP9 + Opus), que o iPhone não lê — mas é o mais
-# rápido e sem perdas quando o destino é um PC.
-dotboot download -formato original https://youtube.com/watch?v=xxxx
+# Só o áudio, em MP3 com título e capa
+dotboot download -formato mp3 -o musica "https://youtube.com/watch?v=xxxx"
 
-# Recorte de um vídeo (um único URL)
+# O ficheiro tal como o site o serve (pode ser .webm/.mkv): sem conversão
+dotboot download -formato original "https://youtube.com/watch?v=xxxx"
+
+# Recorte de um vídeo (um único URL); o nome leva o intervalo
 dotboot download -start 01:30 -end 02:00 https://x.com/user/status/123
 
-# Com um caminho base definido, -o relativo cria uma subpasta dentro dele
-# (aqui grava em ~/Videos/musica; um -o absoluto ignora a base)
-DOTBOOT_OUTPUT_DIR=~/Videos dotboot download -o musica https://youtube.com/watch?v=xxxx
+# Vídeo que pede login ou a verificação "não és um robô"
+dotboot download -cookies ~/cookies.txt "https://youtube.com/watch?v=xxxx"
 
-# Sem Go instalado: via Docker, com a pasta de destino montada
-docker compose run --rm -v ~/Videos:/videos videobot download -o /videos <url>
-```
-
-#### CLI via Docker de qualquer pasta (wrapper)
-
-
-Sem `yt-dlp`/`ffmpeg` instalados no host, a imagem do bot serve de CLI a partir
-de qualquer pasta com um pequeno wrapper no PATH (ex: `~/.local/bin/dotboot`,
-com `chmod +x`):
-
-```sh
-#!/bin/sh
-# dotboot — wrapper que corre a CLI dentro do container.
-BASE="${DOTBOOT_OUTPUT_DIR:-$HOME/Videos}"
-IMAGE="${DOTBOOT_IMAGE:-dotboot:latest}"
-
-mkdir -p "$BASE"
-
-# Aceita as duas formas: "dotboot <url>" e "dotboot download <url>".
-# Sem isto, escrever o subcomando (como a ajuda manda) fazia a palavra
-# "download" ser interpretada como um URL.
-case "$1" in
-  download|bot|help|-h|--help) ;;
-  *) set -- download "$@" ;;
-esac
-
-# Um "-o" com caminho absoluto do host é montado em /out e reescrito. A shell
-# expande o ~ ANTES de o wrapper o ver, por isso "-o ~/Videos" chega aqui já
-# como "/home/…/Videos" — sem esta tradução seria interpretado dentro do
-# container, onde não existe, e falhava com "permission denied".
-OUT_VOL=""
-count=$#
-while [ "$count" -gt 0 ]; do
-  arg="$1"; shift; count=$((count - 1))
-  if [ "$arg" = "-o" ] && [ "$count" -gt 0 ]; then
-    val="$1"; shift; count=$((count - 1))
-    case "$val" in
-      /*) mkdir -p "$val" && OUT_VOL="$val" && val="/out" ;;
-    esac
-    set -- "$@" -o "$val"
-  else
-    set -- "$@" "$arg"
-  fi
-done
-
-# Só liga o TTY quando há terminal, para o progresso do yt-dlp aparecer.
-TTY=""
-[ -t 0 ] && TTY="-t"
-
-if [ -n "$OUT_VOL" ]; then
-  set -- -v "$OUT_VOL:/out" "$IMAGE" "$@"
-else
-  set -- "$IMAGE" "$@"
-fi
-
-# --user faz os ficheiros descarregados pertencerem a ti, e não ao utilizador
-# interno do container. A pasta atual vai para /cwd para o "-a" funcionar.
-exec docker run --rm -i $TTY \
-  --user "$(id -u):$(id -g)" \
-  -e HOME=/tmp \
-  -e DOTBOOT_OUTPUT_DIR=/videos \
-  -v "$BASE:/videos" \
-  -v "$PWD:/cwd" \
-  -w /cwd \
-  "$@"
-```
-
-Com este wrapper funcionam todas estas formas:
-
-```bash
-dotboot <url>                     # para $DOTBOOT_OUTPUT_DIR (default ~/Videos)
-dotboot download <url>            # igual, com o subcomando explícito
-dotboot download -o aulas <url>   # relativo: cria ~/Videos/aulas
-dotboot download -o ~/Videos <url>  # absoluto: montado em /out
+# Ver o que falta instalar ou configurar
+dotboot doctor
 ```
 
 > No zsh, URLs com `?` (ex: `watch?v=...`) têm de ir entre aspas, ou a shell
 > tenta expandi-los como glob.
 
-Constrói a imagem uma vez com `docker build --target production -t dotboot:latest .`
-e repete o build sempre que o código mudar (ou aponta `DOTBOOT_IMAGE` para
-outra tag). Com o wrapper usa sempre `-o` **relativo** — um
-caminho absoluto referiria o sistema de ficheiros do container, não o do host.
+**Continuar downloads**: o modo CLI guarda um registo dos vídeos já
+descarregados em `<pasta>/.dotboot-archive.txt` (`.dotboot-archive-audio.txt`
+para MP3/M4A). Re-executar o mesmo comando — depois de uma interrupção, ou
+quando a playlist tem vídeos novos — descarrega apenas o que falta. Downloads
+interrompidos (CTRL+C) deixam ficheiros `.part` que são retomados, e as
+conversões para MP4 que ficaram por fazer (listadas em `.dotboot-pendentes.txt`)
+são feitas na execução seguinte.
+
+Os ficheiros são gravados como `Título do Vídeo [id].mp4`; um recorte fica
+`Título do Vídeo [id] (01.30-02.00).mp4`, para não se confundir com o vídeo
+completo.
+
+### 🎸 Separar uma música em pistas (`dotboot stems`)
+
+```bash
+# Todas as pistas: vozes, bateria, baixo, guitarra, piano e outros
+dotboot stems "https://youtube.com/watch?v=xxxx"
+
+# Para praticar guitarra: a guitarra isolada e a música sem ela
+dotboot stems -so guitarra -sem guitarra -o praticar ~/Musica/song.mp3
+
+# Karaoke: só o instrumental, com o melhor modelo para a voz
+dotboot stems -modelo voz -so instrumental "https://youtube.com/watch?v=xxxx"
+
+# Um pedaço, em FLAC
+dotboot stems -formato flac -start 01:00 -end 02:30 "https://youtube.com/watch?v=xxxx"
+```
+
+Cada música fica numa pasta: `<saída>/<título>/guitarra.mp3`,
+`baixo.mp3`, `sem-guitarra.mp3`…
+
+| `-modelo` | Pistas | Notas |
+|---|---|---|
+| `6s` (default) | vozes, bateria, baixo, guitarra, piano, outros | HT-Demucs 6 pistas; o piano é a mais fraca |
+| `4s` | vozes, bateria, baixo, outros | HT-Demucs afinado: mais limpo, sem guitarra |
+| `voz` | vozes, instrumental | BS-RoFormer, o melhor para isolar a voz |
+
+A separação usa o [audio-separator](https://github.com/nomadkaraoke/python-audio-separator)
+e corre no CPU: conta com alguns minutos por música. Os modelos descarregam-se
+na primeira utilização de cada um para `$DOTBOOT_MODELS_DIR`. Para instalar:
+
+- **Docker** (recomendado): `make stems-build` — a imagem `dotboot-stems`
+  (~3GB, com o PyTorch) é usada pelo wrapper quando corres `dotboot stems`.
+  Os modelos ficam no volume `dotboot-models`.
+- **Nativa**: `make deps-stems` instala o audio-separator com o
+  [uv](https://docs.astral.sh/uv/), num Python 3.12 só dele. Precisa de um
+  compilador C (`sudo apt install build-essential`).
 
 ### 📱 Formato de saída: MP4 que o telemóvel lê
 
@@ -236,41 +248,31 @@ produzem `.webm` ou `.mkv`. O dotboot garante o MP4 em duas camadas:
 Se preferires a qualidade máxima bruta e não te importas de converter à mão,
 `-formato original` devolve o comportamento do yt-dlp puro.
 
-> **Dica**: `-q 1080` é o ponto doce no YouTube — é a maior altura com H.264
+> **Dica**: `-q 1080` é o ponto doce no YouTube — é a maior resolução com H.264
 > disponível, por isso descarrega no máximo de qualidade *sem* recodificar.
 > Acima disso a conversão é inevitável e pode demorar vários minutos.
-
-**Continuar downloads**: o modo CLI guarda um registo dos vídeos já
-descarregados em `<pasta>/.dotboot-archive.txt`. Re-executar o mesmo comando
-(após uma interrupção, ou quando a playlist tem vídeos novos) descarrega apenas
-o que falta. Downloads interrompidos a meio (CTRL+C) deixam ficheiros `.part`
-que são retomados automaticamente.
-
-Os ficheiros são gravados como `Título do Vídeo [id].mp4` (ou `.ext` com
-`-formato original`). Em sistemas de
-ficheiros restritivos, considere o `--restrict-filenames` do yt-dlp (não ativado
-por omissão).
 
 ## 📁 Estrutura do Projeto
 
 ```
 dotboot/
-├── cmd/dotboot/main.go      # Entrypoint + subcomandos (bot | download | help)
+├── cmd/dotboot/main.go      # Entrypoint + subcomandos (bot | download | stems |
+│                            #   doctor | healthcheck | version | help)
 ├── internal/
 │   ├── config/              # Configuração via variáveis de ambiente
 │   ├── downloader/          # yt-dlp + ffmpeg (sem dependência do Discord)
-│   │                        #   args.go, downloader.go, compress.go,
-│   │                        #   validate.go, errors.go
-│   ├── bot/                 # Sessão Discord, handler /baixar, limites,
-│   │                        #   retries, shutdown
-│   └── cli/                 # Modo terminal (parsing de flags + orquestração)
-├── *_test.go                # Testes de tabela, ao lado do código que testam
-├── go.mod / go.sum          # Dependências Go
-├── Dockerfile               # Build multi-stage (prod + dev)
-├── docker-compose.yml       # Orquestração com profiles
-├── .dockerignore            # Exclusões do contexto de build
-├── .env.example             # Template de configuração
-└── README.md                # Esta documentação
+│   ├── stems/               # Separação de stems (audio-separator + ffmpeg)
+│   ├── bot/                 # Sessão Discord, /baixar, limites, retries,
+│   │                        #   heartbeat e shutdown
+│   ├── cli/                 # Modo terminal: download e stems
+│   └── doctor/              # Diagnóstico do ambiente
+├── scripts/                 # setup, .env, dependências, wrapper Docker, install
+├── Makefile                 # make help
+├── Dockerfile               # production, development e stems
+├── docker-compose.yml       # Bot (default) e live reload (--profile dev)
+├── .goreleaser.yaml         # Binários das releases
+├── .github/                 # CI, release por tag e Dependabot
+└── .env.example             # Template de configuração
 ```
 
 ## ⚙️ Configuração Avançada
@@ -284,16 +286,19 @@ dotboot/
 | `DOTBOOT_MAX_FILE_SIZE_MB` | Teto opcional do upload, em MB (só baixa o limite) | — (limite do servidor) |
 | `DOTBOOT_DOWNLOAD_TIMEOUT` | Timeout por download no bot (sintaxe Go) | `10m` |
 | `DOTBOOT_MAX_CONCURRENT` | Downloads simultâneos no bot | `3` |
+| `DOTBOOT_MAX_PER_USER` | Downloads simultâneos de cada utilizador do bot | `2` |
+| `DOTBOOT_ALLOWED_DOMAINS` | Domínios aceites pelo bot, separados por vírgulas | — (qualquer site público) |
 | `DOTBOOT_SHUTDOWN_GRACE` | Espera por downloads em curso no shutdown | `30s` |
 | `DOTBOOT_OUTPUT_DIR` | Caminho base do CLI: default sem `-o`, raiz de `-o` relativos | diretório atual |
-| `DOTBOOT_TEMP_DIR` | Pasta temporária do bot | default do sistema |
+| `DOTBOOT_TEMP_DIR` | Pasta temporária do bot e dos stems | default do sistema |
+| `DOTBOOT_COOKIES_FILE` | Cookies (formato Netscape) para sites que pedem login | — |
+| `DOTBOOT_JS_RUNTIMES` | Força o runtime JS do yt-dlp (ex: `node`) | deno, ou node |
+| `DOTBOOT_MODELS_DIR` | Modelos da separação de stems | `~/.cache/dotboot/models` |
 | `DOTBOOT_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` | `info` |
 
 Os limites de tamanho, timeout e concorrência aplicam-se **apenas ao bot**; o
-modo CLI não tem limite de tamanho nem compressão. Por omissão o CLI também
-descarrega na melhor qualidade disponível — a flag `-q` é que limita a
-resolução quando quiseres (ex: `-q 720`). Em ambos os modos a saída é sempre
-MP4/H.264/AAC (ver acima).
+modo CLI não tem limite de tamanho nem compressão. O `~` é expandido em todos
+os caminhos.
 
 ### Limite de upload do Discord
 
@@ -310,21 +315,25 @@ onde o `/baixar` foi usado:
 > O limite gratuito passou de 10MB para 20MB a 13 de agosto de 2026.
 
 Vídeos acima do limite são recodificados: o bitrate é calculado a partir da
-duração e do orçamento disponível, e a resolução desce (720p, depois 480p) até
-o ficheiro caber. Quando nem assim é possível — tipicamente vídeos longos, em
-que sobrariam menos de 150 kbps de vídeo — a mensagem de erro diz-te de quanto
-seria preciso e sugere um recorte com `inicio`/`fim` ou o modo terminal.
+duração e do orçamento disponível, e a resolução desce (720p, depois 480p,
+contadas pelo lado menor) até o ficheiro caber. Quando nem assim é possível —
+tipicamente vídeos longos, em que sobrariam menos de 150 kbps de vídeo — a
+mensagem de erro diz-te de quanto seria preciso e sugere um recorte com
+`inicio`/`fim` ou o modo terminal.
 
 `DOTBOOT_MAX_FILE_SIZE_MB` só **baixa** este limite; nunca o aumenta, porque o
 Discord recusaria o upload à mesma.
 
 ## 🐛 Troubleshooting
 
+Primeiro passo, sempre: `dotboot doctor` (ou `make doctor`). Diz o que falta,
+se o yt-dlp está desatualizado e como resolver cada coisa.
+
 ### Bot não conecta
 
-1. Verifique se o token está correto no `.env` (sem o prefixo `Bot `)
+1. Verifique se o token está correto no `.env` (sem o prefixo `Bot `): `make env`
 2. Confirme que o bot tem as permissões necessárias no servidor
-3. Verifique os logs: `docker compose logs videobot`
+3. Verifique os logs: `make logs`
 
 ### O comando `/baixar` não aparece
 
@@ -334,17 +343,28 @@ servidor — o registo passa a ser instantâneo.
 
 ### Download falha
 
+- **"Confirma que não és um robô" / login pedido**: o YouTube desconfia de IPs
+  de servidores. Exporta os cookies de um browser com sessão iniciada e aponta
+  `DOTBOOT_COOKIES_FILE` para eles (ou usa `-cookies` na CLI)
 - **"URL não suportado"**: Verifique se o link é válido
 - **"Vídeo privado"**: O vídeo não é acessível publicamente
 - **"Live sem DVR"**: Streams ao vivo sem rewind não suportam recorte
 - **"Timeout"**: Vídeo muito longo; aumente `DOTBOOT_DOWNLOAD_TIMEOUT` ou use o modo CLI
+- **Falhas novas em sites que funcionavam**: o yt-dlp está desatualizado.
+  Docker: `make update-ytdlp && make up`; nativo: `yt-dlp -U`
+
+### O container aparece como *unhealthy*
+
+O healthcheck (`dotboot healthcheck`) só passa enquanto o gateway do Discord
+responde. Se a ligação cair e não voltar em 10 minutos, o bot sai com erro e o
+Docker reinicia-o (`restart: unless-stopped`).
 
 ### O download está muito lento no fim
 
 Se a mensagem `🔄 ... a converter para H.264` aparecer, a fonte não tinha H.264
 e o vídeo está a ser recodificado para poder tocar no telemóvel. Para evitar:
-use `-q 1080` (a maior altura com H.264 no YouTube) ou `-formato original` se
-não precisar de MP4.
+use `-q 1080` (a maior resolução com H.264 no YouTube) ou `-formato original`
+se não precisar de MP4.
 
 ### Erro de upload (bot)
 
@@ -354,90 +374,54 @@ não precisar de MP4.
 - **"Timeout"**: Conexão lenta, tente novamente
 - **"Rate limit"**: Muitos uploads, aguarde alguns segundos
 
-### Performance
-
-```bash
-# Ver uso de recursos
-docker stats
-
-# Ver logs detalhados
-DOTBOOT_LOG_LEVEL=debug docker compose up
-
-# Reiniciar bot se necessário
-docker compose restart videobot
-```
-
 ## 🔧 Desenvolvimento
 
-### Build e testes locais
-
 ```bash
-go build -o dotboot ./cmd/dotboot
-go vet ./...
-go test ./...
+make check                    # gofmt, vet e testes com -race (o mesmo que o CI)
+make test                     # testes unitários (rápidos, sem rede)
+make test-integration-docker  # yt-dlp e ffmpeg reais, dentro da imagem
+make test-integration-stems   # separação real, dentro da imagem de stems
+make dev                      # bot com live reload (Air)
+make release-snapshot         # binários de todas as plataformas em dist/
 ```
 
-### Live Reload
+O yt-dlp da imagem está fixado no `Dockerfile` (`ARG YTDLP_VERSION`) e é
+verificado contra o checksum da release. `make update-ytdlp` fixa a última
+versão e reconstrói a imagem; o resto das dependências (Go, imagens base,
+actions) é atualizado pelo Dependabot.
 
-O modo de desenvolvimento usa [Air](https://github.com/air-verse/air) para recompilar automaticamente:
-
-```bash
-docker compose --profile dev up
-```
-
-### Estrutura Docker
-
-- **Produção** (`target: production`): Imagem mínima Debian + binário (`ENTRYPOINT /dotboot`, `CMD bot`)
-- **Desenvolvimento** (`target: development`): Alpine + Go + Air + código fonte
-
-### Debugging
+### Releases
 
 ```bash
-# Acesso ao container
-docker compose exec videobot sh
-
-# Testar yt-dlp manualmente
-docker compose exec videobot yt-dlp --version
-
-# Atualizar o yt-dlp (quebra sempre que o YouTube muda): reconstruir a imagem.
-# Atenção: repetir o MESMO valor de YTDLP_VERSION reaproveita a camada em cache
-# e não atualiza nada. Passa uma tag concreta (que também fixa a versão)...
-docker compose build --build-arg YTDLP_VERSION=2026.08.19 videobot
-# ...ou força o rebuild da camada quando queres mesmo a mais recente:
-docker compose build --no-cache videobot
-docker compose up -d videobot
-
-# Verificar dependências
-docker compose exec videobot ffmpeg -version
+make release VERSION=v0.1.0
 ```
+
+Cria e envia a tag; o GitHub Actions publica os binários (GoReleaser) com o
+`checksums.txt`.
 
 ## 🚀 Deploy
 
 ### Docker Hub / Registry
 
 ```bash
-# Build para produção
-docker build --target production -t seu-registry/dotboot:latest .
-
-# Push para registry
+make docker-build IMAGE=seu-registry/dotboot:latest
 docker push seu-registry/dotboot:latest
 ```
 
-### Variáveis de Ambiente em Produção
+### Docker run direto
 
 ```bash
-# Docker run direto (bot)
-docker run -d --name dotboot \
+# Bot. O --stop-timeout cobre os 30s de graça do encerramento: com o default
+# (10s) o Docker matava os downloads em curso.
+docker run -d --name dotboot --init --restart unless-stopped --stop-timeout 45 \
   -e DISCORD_TOKEN=seu_token_aqui \
   seu-registry/dotboot:latest
 
-# Download via terminal com a mesma imagem
-docker run --rm -v ~/Videos:/videos seu-registry/dotboot:latest \
-  download -o /videos https://youtube.com/playlist?list=yyyy
-
-# Ou via docker-compose com override
-echo "DISCORD_TOKEN=seu_token" > .env.production
-docker compose -f docker-compose.yml --env-file .env.production up -d
+# CLI com a mesma imagem. O --user faz os ficheiros serem teus (sem ele, o
+# utilizador interno do container não tem permissão para escrever na pasta).
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -v ~/Videos:/videos seu-registry/dotboot:latest \
+  download -o /videos "https://youtube.com/playlist?list=yyyy"
 ```
 
 ## 📄 Licença
@@ -448,5 +432,3 @@ educacionais e de desenvolvimento.
 ---
 
 > ⚠️ **Nunca commite o ficheiro `.env`** - ele contém o token secreto do bot!
-
-> 🐳 **Apenas Docker é necessário** - todas as dependências estão no container!
