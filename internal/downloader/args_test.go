@@ -139,51 +139,81 @@ func TestBuildArgsCLIModeWithSection(t *testing.T) {
 	}
 }
 
-func TestQualitySelectors(t *testing.T) {
+func TestQualitySort(t *testing.T) {
 	tests := []struct {
-		name       string
-		q          string
-		wantFormat string
-		wantSort   string
-		wantErr    bool
+		name    string
+		q       string
+		want    string
+		wantErr bool
 	}{
-		{"vazio é melhor qualidade", "", "", "", false},
-		{"best é melhor qualidade", "best", "", "", false},
-		{"altura limita a 720", "720", "bv*[height<=?720]+ba/b[height<=?720]/bv*+ba/b", "res:720", false},
-		{"altura 1080", "1080", "bv*[height<=?1080]+ba/b[height<=?1080]/bv*+ba/b", "res:1080", false},
-		{"texto inválido", "abc", "", "", true},
-		{"zero inválido", "0", "", "", true},
-		{"negativo inválido", "-720", "", "", true},
+		{"vazio é melhor qualidade", "", "", false},
+		{"best é melhor qualidade", "best", "", false},
+		{"limite de 720", "720", "res:720", false},
+		{"limite de 1080", "1080", "res:1080", false},
+		{"texto inválido", "abc", "", true},
+		{"zero inválido", "0", "", true},
+		{"negativo inválido", "-720", "", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			format, sort, err := QualitySelectors(tt.q)
+			got, err := QualitySort(tt.q)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("QualitySelectors(%q) err = %v, wantErr = %v", tt.q, err, tt.wantErr)
+				t.Fatalf("QualitySort(%q) err = %v, wantErr = %v", tt.q, err, tt.wantErr)
 			}
-			if format != tt.wantFormat {
-				t.Errorf("QualitySelectors(%q) format = %q, esperado %q", tt.q, format, tt.wantFormat)
-			}
-			if sort != tt.wantSort {
-				t.Errorf("QualitySelectors(%q) sort = %q, esperado %q", tt.q, sort, tt.wantSort)
+			if got != tt.want {
+				t.Errorf("QualitySort(%q) = %q, esperado %q", tt.q, got, tt.want)
 			}
 		})
 	}
 }
 
-// O "?" é o que impede o limite de altura de excluir sites que não expõem a
-// resolução dos formatos (ex: Instagram) — sem ele o -q partia esses sites.
-func TestQualitySelectorsToleraAlturaDesconhecida(t *testing.T) {
-	format, _, err := QualitySelectors("720")
+// O limite é pela "res" do yt-dlp (o lado menor), nunca pela altura: um
+// filtro [height<=720] deitava fora o 720x1280 de um vídeo vertical e
+// entregava 360x640.
+func TestQualitySortNaoFiltraPelaAltura(t *testing.T) {
+	got, err := QualitySort("720")
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
-	if !strings.Contains(format, "height<=?720") {
-		t.Errorf("o filtro devia usar height<=?720 (com ?): %q", format)
+	if strings.Contains(got, "height") {
+		t.Errorf("QualitySort não pode limitar pela altura: %q", got)
 	}
-	if !strings.HasSuffix(format, "/bv*+ba/b") {
-		t.Errorf("o formato devia terminar num fallback sem limite: %q", format)
+}
+
+func TestBuildArgsOpcoesNovas(t *testing.T) {
+	got := BuildArgs(Options{
+		URLs:          []string{"https://youtu.be/abc"},
+		Format:        "ba/b",
+		ExtractAudio:  "mp3",
+		EmbedMetadata: true,
+		CookiesFile:   "/tmp/work/cookies.txt",
+		JSRuntimes:    "node",
+		Quiet:         true,
+	})
+
+	want := []string{
+		"-f", "ba/b",
+		"-x", "--audio-format", "mp3", "--audio-quality", "0",
+		"--embed-metadata", "--embed-thumbnail",
+		"--cookies", "/tmp/work/cookies.txt",
+		"--js-runtimes", "node",
+		"--no-warnings", "--quiet",
+		"https://youtu.be/abc",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("BuildArgs (opções novas) =\n%v\nesperado\n%v", got, want)
+	}
+}
+
+// Sem cookies nem runtime configurados, as flags não podem aparecer: um
+// "--cookies" sem valor engoliria o URL seguinte.
+func TestBuildArgsOmiteOpcoesVazias(t *testing.T) {
+	got := BuildArgs(Options{URLs: []string{"https://youtu.be/abc"}})
+	for _, flag := range []string{"--cookies", "--js-runtimes", "-x", "--embed-metadata"} {
+		if slices.Contains(got, flag) {
+			t.Errorf("BuildArgs não devia conter %q sem a opção definida: %v", flag, got)
+		}
 	}
 }
 

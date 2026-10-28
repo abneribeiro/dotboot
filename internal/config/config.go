@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +53,32 @@ type Config struct {
 
 	// LogLevel controla a verbosidade (DOTBOOT_LOG_LEVEL: debug|info|warn|error).
 	LogLevel slog.Level
+
+	// CookiesFile é um ficheiro de cookies em formato Netscape
+	// (DOTBOOT_COOKIES_FILE), passado ao yt-dlp com --cookies em ambos os
+	// modos. Resolve a verificação "não és um robô" do YouTube, a restrição
+	// de idade e o conteúdo que exige login. Tem de existir quando definido.
+	CookiesFile string
+
+	// JSRuntimes é passado ao yt-dlp como --js-runtimes (DOTBOOT_JS_RUNTIMES,
+	// ex: "node"). Vazio usa o default do yt-dlp, o Deno; o main preenche-o
+	// com "node" quando o Deno falta e o node existe.
+	JSRuntimes string
+
+	// AllowedDomains, quando não vazio (DOTBOOT_ALLOWED_DOMAINS, separados
+	// por vírgulas), limita o bot a esses domínios e aos seus subdomínios.
+	// Não se aplica ao modo CLI.
+	AllowedDomains []string
+
+	// MaxPerUser limita os downloads de cada utilizador do bot, em curso ou
+	// em fila (DOTBOOT_MAX_PER_USER, default 2): sem ele, uma só pessoa
+	// enchia a fila de todos.
+	MaxPerUser int
+
+	// ModelsDir guarda os modelos da separação de stems, descarregados na
+	// primeira utilização de cada um (DOTBOOT_MODELS_DIR, default
+	// ~/.cache/dotboot/models).
+	ModelsDir string
 }
 
 // Load lê a configuração a partir do ambiente do processo.
@@ -71,6 +98,9 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 		OutputDir:       getenv("DOTBOOT_OUTPUT_DIR"),
 		TempDir:         os.TempDir(),
 		LogLevel:        slog.LevelInfo,
+		JSRuntimes:      getenv("DOTBOOT_JS_RUNTIMES"),
+		MaxPerUser:      2,
+		ModelsDir:       defaultModelsDir(getenv),
 	}
 
 	if v := getenv("DOTBOOT_MAX_FILE_SIZE_MB"); v != "" {
@@ -124,5 +154,99 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 		}
 	}
 
+	if v := getenv("DOTBOOT_MAX_PER_USER"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("DOTBOOT_MAX_PER_USER inválido: %q (usa um inteiro >= 1)", v)
+		}
+		cfg.MaxPerUser = n
+	}
+
+	if v := getenv("DOTBOOT_ALLOWED_DOMAINS"); v != "" {
+		domains, err := parseDomains(v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.AllowedDomains = domains
+	}
+
+	if v := getenv("DOTBOOT_MODELS_DIR"); v != "" {
+		cfg.ModelsDir = v
+	}
+	cfg.CookiesFile = getenv("DOTBOOT_COOKIES_FILE")
+
+	// O ~ só é expandido pela shell na linha de comandos; num .env ou num
+	// "environment:" do compose chegava aqui literal e criava uma pasta "~".
+	for _, p := range []*string{&cfg.OutputDir, &cfg.TempDir, &cfg.ModelsDir, &cfg.CookiesFile} {
+		expanded, err := expandHome(*p, getenv)
+		if err != nil {
+			return nil, err
+		}
+		*p = expanded
+	}
+
+	if cfg.CookiesFile != "" {
+		info, err := os.Stat(cfg.CookiesFile)
+		if err != nil {
+			return nil, fmt.Errorf("DOTBOOT_COOKIES_FILE inválido: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("DOTBOOT_COOKIES_FILE inválido: %s não é um ficheiro", cfg.CookiesFile)
+		}
+	}
+
 	return cfg, nil
+}
+
+// parseDomains interpreta DOTBOOT_ALLOWED_DOMAINS: domínios separados por
+// vírgulas, normalizados em minúsculas e sem "*." nem pontos nas pontas. Um
+// URL colado por engano (com esquema ou caminho) é rejeitado em vez de nunca
+// corresponder a nada.
+func parseDomains(v string) ([]string, error) {
+	var domains []string
+	for _, d := range strings.Split(v, ",") {
+		d = strings.ToLower(strings.TrimSpace(d))
+		d = strings.Trim(strings.TrimPrefix(d, "*."), ".")
+		if d == "" {
+			continue
+		}
+		if strings.ContainsAny(d, "/: ") {
+			return nil, fmt.Errorf("DOTBOOT_ALLOWED_DOMAINS inválido: %q (usa só domínios, ex: youtube.com,x.com)", d)
+		}
+		domains = append(domains, d)
+	}
+	if len(domains) == 0 {
+		return nil, fmt.Errorf("DOTBOOT_ALLOWED_DOMAINS inválido: %q não tem nenhum domínio", v)
+	}
+	return domains, nil
+}
+
+// expandHome expande um "~" inicial a partir de $HOME.
+func expandHome(path string, getenv func(string) string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home := getenv("HOME")
+	if home == "" {
+		var err error
+		if home, err = os.UserHomeDir(); err != nil {
+			return "", fmt.Errorf("não foi possível expandir %q: %w", path, err)
+		}
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~")), nil
+}
+
+// defaultModelsDir segue a convenção XDG para caches, como o resto das
+// ferramentas que descarregam modelos.
+func defaultModelsDir(getenv func(string) string) string {
+	if dir := getenv("XDG_CACHE_HOME"); dir != "" {
+		return filepath.Join(dir, "dotboot", "models")
+	}
+	if home := getenv("HOME"); home != "" {
+		return filepath.Join(home, ".cache", "dotboot", "models")
+	}
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "dotboot", "models")
+	}
+	return filepath.Join(os.TempDir(), "dotboot-models")
 }

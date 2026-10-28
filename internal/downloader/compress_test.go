@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -101,6 +102,106 @@ func TestFormatDuration(t *testing.T) {
 	for _, tt := range tests {
 		if got := formatDuration(tt.sec); got != tt.want {
 			t.Errorf("formatDuration(%v) = %q, esperado %q", tt.sec, got, tt.want)
+		}
+	}
+}
+
+// A compressão tem de produzir o mesmo H.264 8 bits que o EnsureMP4: é isso
+// que permite ao ensureMP4WithinBudget saltar a conversão quando o ficheiro
+// vai ser comprimido de qualquer forma.
+func TestEncodeArgsGaranteH264OitoBits(t *testing.T) {
+	got := encodeArgs("/w/in.webm", "/w/out.mp4", "scale=-2:720", 1200, 128)
+
+	want := []string{
+		"-i", "/w/in.webm",
+		"-map", "0:v:0", "-map", "0:a:0?",
+		"-vf", "scale=-2:720",
+		"-c:v", "libx264",
+		"-b:v", "1200k",
+		"-maxrate", "1200k",
+		"-bufsize", "2400k",
+		"-preset", compressPreset,
+		"-pix_fmt", "yuv420p",
+		"-c:a", "aac",
+		"-b:a", "128k",
+		"-movflags", "+faststart",
+		"-y", "/w/out.mp4",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("encodeArgs =\n%v\nesperado\n%v", got, want)
+	}
+}
+
+func TestEncodeArgsSemEscalaNaoTemFiltro(t *testing.T) {
+	got := encodeArgs("/w/in.mp4", "/w/out.mp4", "", 800, 96)
+	if slices.Contains(got, "-vf") {
+		t.Errorf("sem escala não devia haver -vf: %v", got)
+	}
+}
+
+func TestScaleFilter(t *testing.T) {
+	tests := []struct {
+		name          string
+		width, height int
+		target        int
+		want          string
+	}{
+		{"horizontal 1080p para 720", 1920, 1080, 720, "scale=-2:720"},
+		// O caso que estava errado: escalar a altura dava 405x720.
+		{"vertical 1080x1920 para 720 fica 720x1280", 1080, 1920, 720, "scale=720:-2"},
+		{"vertical para 480", 1080, 1920, 480, "scale=480:-2"},
+		{"quadrado conta como horizontal", 1080, 1080, 720, "scale=-2:720"},
+		{"já está em 720: nada a reduzir", 1280, 720, 720, ""},
+		{"vertical já em 720: nada a reduzir", 720, 1280, 720, ""},
+		{"abaixo do alvo: nada a reduzir", 854, 480, 720, ""},
+		{"alvo 0 mantém a resolução", 1920, 1080, 0, ""},
+		{"dimensões desconhecidas assumem horizontal", 0, 0, 720, "scale=-2:720"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := scaleFilter(tt.width, tt.height, tt.target); got != tt.want {
+				t.Errorf("scaleFilter(%d, %d, %d) = %q, esperado %q", tt.width, tt.height, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseDimensions(t *testing.T) {
+	tests := []struct {
+		in            string
+		width, height int
+	}{
+		{"1920x1080", 1920, 1080},
+		{"1080x1920", 1080, 1920},
+		{" 640 x 360 ", 640, 360},
+		{"", 0, 0},
+		{"1920", 0, 0},
+		{"Nx1080", 0, 0},
+	}
+	for _, tt := range tests {
+		w, h := parseDimensions(tt.in)
+		if w != tt.width || h != tt.height {
+			t.Errorf("parseDimensions(%q) = %dx%d, esperado %dx%d", tt.in, w, h, tt.width, tt.height)
+		}
+	}
+}
+
+// O limite chega sem a margem do envelope (20MB - 256KB); truncar mostrava
+// "19MB" a quem sabe que o limite do Discord é 20MB.
+func TestRoundMB(t *testing.T) {
+	const mb = 1024 * 1024
+	tests := []struct {
+		bytes int64
+		want  int64
+	}{
+		{20*mb - 256*1024, 20},
+		{50 * mb, 50},
+		{mb - 256*1024, 1},
+		{0, 0},
+	}
+	for _, tt := range tests {
+		if got := roundMB(tt.bytes); got != tt.want {
+			t.Errorf("roundMB(%d) = %d, esperado %d", tt.bytes, got, tt.want)
 		}
 	}
 }

@@ -1,8 +1,6 @@
 package bot
 
 import (
-	"log/slog"
-
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -81,7 +79,7 @@ func (b *Bot) uploadLimit(s *discordgo.Session, guildID string) int64 {
 	tier := b.guildTier(s, guildID)
 	limit := applyCeiling(limitForTier(tier), b.cfg.MaxFileSizeMB)
 
-	slog.Debug("limite de upload calculado",
+	b.log.Debug("limite de upload calculado",
 		"guild_id", guildID, "premium_tier", int(tier), "limit_bytes", limit)
 	return limit
 }

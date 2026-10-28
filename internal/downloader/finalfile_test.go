@@ -89,3 +89,46 @@ func TestFinalFileSoComFragmentos(t *testing.T) {
 		t.Error("finalFile devia falhar quando só existem ficheiros intermédios")
 	}
 }
+
+// A cópia dos cookies vive no diretório de trabalho; se o vídeo não estiver
+// lá, a varredura não a pode devolver como se fosse o download.
+func TestFinalFileIgnoraOsCookies(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, cookiesFileName, 4096)
+
+	if got, err := finalFile(dir, filepath.Join(dir, "final.path")); err == nil {
+		t.Errorf("finalFile = %q, esperava erro: só existe a cópia dos cookies", got)
+	}
+}
+
+func TestCopyCookies(t *testing.T) {
+	dir := t.TempDir()
+
+	if got, err := copyCookies("", dir); err != nil || got != "" {
+		t.Errorf("copyCookies sem ficheiro = (%q, %v), esperado (\"\", nil)", got, err)
+	}
+
+	src := write(t, t.TempDir(), "cookies.txt", 0)
+	if err := os.WriteFile(src, []byte("# Netscape HTTP Cookie File\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := copyCookies(src, dir)
+	if err != nil {
+		t.Fatalf("copyCookies falhou: %v", err)
+	}
+	if filepath.Dir(got) != dir {
+		t.Errorf("a cópia devia ficar em %s, ficou em %s", dir, got)
+	}
+	info, err := os.Stat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// São credenciais: só o dono as lê.
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("permissões da cópia = %o, esperado 600", perm)
+	}
+
+	if _, err := copyCookies(filepath.Join(dir, "nao-existe.txt"), dir); err == nil {
+		t.Error("copyCookies devia falhar com um ficheiro inexistente")
+	}
+}

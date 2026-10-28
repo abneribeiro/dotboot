@@ -28,9 +28,30 @@ type Options struct {
 	// Format é o valor de -f; vazio omite a flag (default do yt-dlp = melhor qualidade).
 	Format string
 
-	// FormatSort é o valor de -S/--format-sort (ver SortForQuality);
+	// FormatSort é o valor de -S/--format-sort (ver QualitySort e MP4Sort);
 	// vazio omite a flag.
 	FormatSort string
+
+	// ExtractAudio, quando definido (ex: "mp3", "m4a", "wav"), guarda só o
+	// áudio nesse formato (-x --audio-format). Sem vídeo, o MergeFormat e a
+	// garantia de MP4 não se aplicam.
+	ExtractAudio string
+
+	// EmbedMetadata embute título, artista e capa no ficheiro (CLI em modo
+	// áudio): é o que faz um MP3 aparecer com nome e capa no telemóvel.
+	EmbedMetadata bool
+
+	// CookiesFile passa --cookies: um ficheiro em formato Netscape com a
+	// sessão de um browser, que resolve a verificação "não és um robô" do
+	// YouTube, a restrição de idade e o conteúdo que exige login. O yt-dlp
+	// reescreve-o no fim, por isso processos concorrentes precisam de cópias
+	// próprias (ver copyCookies).
+	CookiesFile string
+
+	// JSRuntimes passa --js-runtimes (ex: "node"). Vazio deixa o default do
+	// yt-dlp, o Deno — o runtime que resolve os desafios JavaScript com que o
+	// YouTube protege os formatos.
+	JSRuntimes string
 
 	// NoPlaylist impede o download de playlists inteiras quando o link
 	// aponta para um vídeo dentro de uma playlist (sempre no bot;
@@ -77,26 +98,26 @@ type Options struct {
 	Stderr io.Writer
 }
 
-// QualitySelectors traduz uma qualidade pedida no CLI nos valores de -f e -S
-// do yt-dlp. "" ou "best" devolvem ambos vazios (o default do yt-dlp já é a
-// melhor qualidade). Um inteiro (ex: "1080", "720") devolve um filtro que é um
-// limite real de altura, mais a ordenação correspondente.
+// QualitySort traduz uma qualidade pedida no CLI no -S do yt-dlp. "" ou
+// "best" devolvem vazio (o default do yt-dlp já é a melhor qualidade). Um
+// inteiro (ex: "1080", "720") devolve "res:N", que já é um limite com
+// fallback: o yt-dlp escolhe a maior resolução que não passe de N e, só se
+// não houver nenhuma, a mais pequena acima.
 //
-// O "?" em [height<=?N] é o que torna o limite seguro: sites que não expõem a
-// altura dos formatos (ex: Instagram) mantêm-se elegíveis em vez de fazerem o
-// filtro falhar. O -S resolve o desempate entre os que sobram, e a última
-// alternativa (bv*+ba/b) garante que há sempre um formato quando nenhum
-// cumpre o limite.
-func QualitySelectors(q string) (format, sort string, err error) {
+// A "res" do yt-dlp é o lado MENOR do vídeo, e é por isso que não há um
+// filtro -f [height<=N]: num vídeo vertical (Shorts, TikTok, Reels) 720p é
+// 720x1280, e filtrar pela altura deitava-o fora e entregava 360x640. Sites
+// que não expõem a resolução (ex: Instagram) continuam a funcionar — sem o
+// valor, o critério apenas não desempata.
+func QualitySort(q string) (string, error) {
 	if q == "" || q == "best" {
-		return "", "", nil
+		return "", nil
 	}
 	n, err := strconv.Atoi(q)
 	if err != nil || n < 1 {
-		return "", "", fmt.Errorf("qualidade inválida: %q (usa \"best\" ou uma altura em pixels, ex: 1080, 720)", q)
+		return "", fmt.Errorf("qualidade inválida: %q (usa \"best\" ou uma resolução, ex: 1080, 720)", q)
 	}
-	format = fmt.Sprintf("bv*[height<=?%d]+ba/b[height<=?%d]/bv*+ba/b", n, n)
-	return format, fmt.Sprintf("res:%d", n), nil
+	return fmt.Sprintf("res:%d", n), nil
 }
 
 // mp4CodecSort faz o yt-dlp preferir H.264 + AAC — o único par que iPhones e
@@ -137,8 +158,21 @@ func BuildArgs(o Options) []string {
 	if o.MergeFormat != "" {
 		args = append(args, "--merge-output-format", o.MergeFormat)
 	}
+	if o.ExtractAudio != "" {
+		// --audio-quality 0 é o melhor VBR do codec; num WAV não tem efeito.
+		args = append(args, "-x", "--audio-format", o.ExtractAudio, "--audio-quality", "0")
+	}
+	if o.EmbedMetadata {
+		args = append(args, "--embed-metadata", "--embed-thumbnail")
+	}
 	if o.MaxFileSize > 0 {
 		args = append(args, "--max-filesize", strconv.FormatInt(o.MaxFileSize, 10))
+	}
+	if o.CookiesFile != "" {
+		args = append(args, "--cookies", o.CookiesFile)
+	}
+	if o.JSRuntimes != "" {
+		args = append(args, "--js-runtimes", o.JSRuntimes)
 	}
 	if o.RestrictFilenames {
 		args = append(args, "--restrict-filenames")
