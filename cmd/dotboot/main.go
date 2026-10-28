@@ -4,6 +4,7 @@
 //
 //	dotboot bot          Arranca o bot Discord (/baixar)
 //	dotboot download     Descarrega vídeos via terminal, sem limites do Discord
+//	dotboot doctor       Verifica dependências e configuração
 //	dotboot healthcheck  Verifica o heartbeat do bot (HEALTHCHECK da imagem)
 //	dotboot version      Mostra a versão
 package main
@@ -24,9 +25,10 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"dotboot/internal/bot"
-	"dotboot/internal/cli"
-	"dotboot/internal/config"
+	"github.com/abneribeiro/dotboot/internal/bot"
+	"github.com/abneribeiro/dotboot/internal/cli"
+	"github.com/abneribeiro/dotboot/internal/config"
+	"github.com/abneribeiro/dotboot/internal/doctor"
 )
 
 const usageText = `dotboot — bot Discord e downloader de vídeos (yt-dlp)
@@ -34,6 +36,7 @@ const usageText = `dotboot — bot Discord e downloader de vídeos (yt-dlp)
 Uso:
   dotboot bot                        Arranca o bot Discord
   dotboot download [flags] URL...    Descarrega vídeos via terminal
+  dotboot doctor                     Verifica dependências e configuração
   dotboot healthcheck                Verifica se o bot está ligado (Docker)
   dotboot version                    Mostra a versão
   dotboot help                       Mostra esta ajuda
@@ -113,6 +116,8 @@ func main() {
 		err = runBot(ctx, cfg, logger)
 	case "download":
 		err = runDownload(ctx, cfg, logger, os.Args[2:])
+	case "doctor":
+		err = doctor.Run(ctx, cfg, os.Stdout)
 	case "healthcheck":
 		if err := bot.CheckHeartbeat(bot.HeartbeatPath(cfg.TempDir), bot.HeartbeatMaxAge, time.Now()); err != nil {
 			fmt.Fprintf(os.Stderr, "unhealthy: %v\n", err)
@@ -132,7 +137,7 @@ func main() {
 	case errors.Is(err, cli.ErrInterrupted):
 		// 128 + SIGINT, como as shells: um CTRL+C não é um "erro fatal".
 		os.Exit(130)
-	case errors.Is(err, cli.ErrPartial):
+	case errors.Is(err, cli.ErrPartial), errors.Is(err, doctor.ErrProblems):
 		// Já foi reportado; só o código de saída é que muda.
 		os.Exit(1)
 	default:

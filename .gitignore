@@ -11,3 +11,9 @@ docker-compose.override.yml
 # Air live reload (desenvolvimento)
 tmp/
 build-errors.log
+
+# Build e releases (make build, make release-snapshot)
+/bin/
+/dist/
+coverage.out
+*.test

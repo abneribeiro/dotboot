@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"dotboot/internal/downloader"
+	"github.com/abneribeiro/dotboot/internal/downloader"
 )
 
 func TestParseArgsOutputDirPrecedence(t *testing.T) {

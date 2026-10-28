@@ -14,7 +14,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"dotboot/internal/config"
+	"github.com/abneribeiro/dotboot/internal/config"
 )
 
 // commands é o conjunto completo de Slash Commands do bot. O

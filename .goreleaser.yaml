@@ -1,0 +1,52 @@
+# GoReleaser: binários do dotboot para cada sistema, publicados como release
+# do GitHub quando se envia uma tag vX.Y.Z (ver .github/workflows/release.yml).
+# Localmente, sem publicar nada: make release-snapshot.
+version: 2
+
+project_name: dotboot
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: dotboot
+    main: ./cmd/dotboot
+    binary: dotboot
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version=v{{ .Version }} -X main.commit={{ .ShortCommit }} -X main.date={{ .Date }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: dotboot
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # O scripts/install.sh conta com este nome.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # O install-deps.sh vai no archive para o install.sh instalar o yt-dlp,
+    # o deno e o ffmpeg sem precisar do repositório.
+    files:
+      - README.md
+      - .env.example
+      - scripts/install-deps.sh
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs"
+      - "^test"
+      - "^chore"
+
+release:
+  prerelease: auto
