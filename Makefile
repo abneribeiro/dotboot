@@ -45,7 +45,8 @@ endef
 
 .PHONY: help setup env doctor deps deps-stems build install install-docker uninstall \
 	fmt vet lint test test-race cover test-integration test-integration-docker \
-	check docker-build up down restart logs ps dev update-ytdlp release-snapshot release clean
+	test-integration-stems check docker-build stems-build up down restart logs ps dev \
+	update-ytdlp release-snapshot release clean
 
 ##@ Começar
 
@@ -124,12 +125,21 @@ test-integration-docker: docker-build ## Testes de integração dentro da imagem
 		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" $(IMAGE) \
 		-test.v -test.timeout 20m $(if $(RUN),-test.run '$(RUN)')
 
+test-integration-stems: stems-build ## Separação a sério dentro da imagem de stems (descarrega um modelo)
+	CGO_ENABLED=0 go test -c -tags integration -o $(BIN_DIR)/stems.test ./internal/stems
+	docker run --rm --network host --entrypoint /tests/stems.test \
+		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" -v dotboot-models:/models $(STEMS_IMAGE) \
+		-test.v -test.timeout 30m
+
 check: lint test-race ## lint + testes com -race (o mesmo que o CI)
 
 ##@ Docker e bot
 
 docker-build: ## Constrói a imagem de produção (IMAGE=dotboot:latest)
 	$(DOCKER_BUILD) --target production -t $(IMAGE) .
+
+stems-build: ## Constrói a imagem de stems (STEMS_IMAGE=dotboot-stems:latest, ~3GB)
+	$(DOCKER_BUILD) --target stems -t $(STEMS_IMAGE) .
 
 up: .env ## Arranca ou atualiza o bot (reconstrói a imagem)
 	@scripts/configure-env.sh --check-token
