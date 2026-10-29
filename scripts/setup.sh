@@ -2,10 +2,7 @@
 # Assistente pós-clone (make setup): deixa o dotboot pronto a usar.
 #
 #   make setup                     pergunta o que fazer em cada passo
-#   make setup YES=1 CLI=native BOT=1 STEMS=0
-#                                  sem perguntas (CLI=native|docker|none)
-#
-# Nunca sobrescreve o .env: só acrescenta ou altera o que for respondido.
+#   make setup YES=1 CLI=docker    sem perguntas (CLI=native|docker)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -21,123 +18,78 @@ fi
 have() { command -v "$1" >/dev/null 2>&1; }
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-# ask "pergunta" s|n — devolve 0 para sim. Sem terminal, vale o default.
-ask() {
-	local answer hint="[s/N]"
-	if [ "$2" = s ]; then
-		hint="[S/n]"
-	fi
-	if [ "$interactive" = 0 ]; then
-		[ "$2" = s ]
-		return
-	fi
-	read -r -p "$1 $hint " answer
-	case "${answer:-$2}" in [sSyY]*) return 0 ;; *) return 1 ;; esac
-}
-
-step "1/5 Pré-requisitos"
+step "1/4 Pré-requisitos"
 docker_ok=0
-if have docker && docker compose version >/dev/null 2>&1; then
+if have docker && docker info >/dev/null 2>&1; then
 	docker_ok=1
 	echo "  ✅ $(docker --version)"
 else
-	echo "  ⚠️  Docker com o plugin compose não encontrado: o bot e a CLI via Docker precisam dele"
-	echo "     (https://docs.docker.com/get-docker/)."
+	echo "  ℹ️  Docker não encontrado (ou sem permissão): só é preciso para a instalação via Docker."
 fi
 go_ok=0
 if have go; then
 	go_ok=1
 	echo "  ✅ $(go version)"
 else
-	echo "  ℹ️  Go não encontrado: só é preciso para compilar a CLI nativa (https://go.dev/dl/)."
+	echo "  ℹ️  Go não encontrado: só é preciso para compilar a instalação nativa (https://go.dev/dl/)."
 fi
 
-step "2/5 Configuração (.env)"
-scripts/configure-env.sh
-
-step "3/5 CLI (dotboot download / stems)"
+step "2/4 Instalação"
 cli=${CLI:-}
 if [ -z "$cli" ]; then
-	default=none
-	if [ "$go_ok" = 1 ]; then
-		default=native
-	elif [ "$docker_ok" = 1 ]; then
+	# Docker por omissão: traz tudo (incluindo a separação de stems) sem
+	# instalar nada no sistema.
+	default=native
+	if [ "$docker_ok" = 1 ]; then
 		default=docker
 	fi
 	cli=$default
 	if [ "$interactive" = 1 ]; then
-		echo "  1) native  binário em $BINDIR + yt-dlp, deno e ffmpeg no host (precisa de Go)"
-		echo "  2) docker  wrapper que corre tudo num container (só precisa de Docker)"
-		echo "  3) none    não instalar a CLI"
-		read -r -p "Como queres usar a CLI? [$default] " answer
+		echo "  1) docker  tudo numa imagem (~3GB), incluindo os stems; nada instalado no sistema"
+		echo "  2) native  binário em $BINDIR + yt-dlp, deno e ffmpeg no sistema (precisa de Go);"
+		echo "             os stems instalam-se à parte com make deps-stems"
+		read -r -p "Como queres instalar? [$default] " answer
 		case "${answer:-$default}" in
-		1 | native) cli=native ;;
-		2 | docker) cli=docker ;;
-		*) cli=none ;;
+		1 | docker) cli=docker ;;
+		2 | native) cli=native ;;
 		esac
 	fi
 fi
 
-image_built=0
 case "$cli" in
+docker)
+	if [ "$docker_ok" = 0 ]; then
+		echo "  ❌ A instalação via Docker precisa do Docker (https://docs.docker.com/get-docker/)." >&2
+		exit 1
+	fi
+	make docker-build
+	make install-docker
+	;;
 native)
 	if [ "$go_ok" = 0 ]; then
-		echo "  ❌ A CLI nativa precisa do Go. Instala-o ou escolhe CLI=docker." >&2
+		echo "  ❌ A instalação nativa precisa do Go. Instala-o ou usa CLI=docker." >&2
 		exit 1
 	fi
 	make deps
 	make install
-	;;
-docker)
-	if [ "$docker_ok" = 0 ]; then
-		echo "  ❌ A CLI via Docker precisa do Docker." >&2
-		exit 1
+	if [ "$interactive" = 1 ]; then
+		read -r -p "Instalar também a separação de stems (~1.5GB, precisa de um compilador C)? [s/N] " answer
+		case "$answer" in [sSyY]*) make deps-stems ;; esac
 	fi
-	make docker-build
-	image_built=1
-	make install-docker
 	;;
-none) echo "  CLI não instalada (podes voltar a correr make setup)." ;;
 *)
-	echo "  CLI inválida: $cli (usa native, docker ou none)" >&2
+	echo "  CLI inválida: $cli (usa docker ou native)" >&2
 	exit 2
 	;;
 esac
 
-step "4/5 Imagens Docker e bot"
-if [ "$docker_ok" = 1 ]; then
-	if [ "$image_built" = 0 ]; then
-		make docker-build
-	fi
+step "3/4 Configuração"
+scripts/configure-env.sh
 
-	if [ "${STEMS:-}" = 1 ] || { [ -z "${STEMS:-}" ] && ask "Construir também a imagem de stems (~3GB, separa guitarra/baixo/voz)?" n; }; then
-		make stems-build
-	fi
-
-	if scripts/configure-env.sh --check-token 2>/dev/null; then
-		if [ "${BOT:-}" = 1 ] || { [ -z "${BOT:-}" ] && ask "Arrancar o bot agora?" s; }; then
-			make up
-		fi
-	else
-		echo "  ℹ️  Sem DISCORD_TOKEN no .env: o bot fica por arrancar (make env, depois make up)."
-	fi
-else
-	echo "  ℹ️  Sem Docker: o bot pode correr com \`dotboot bot\` (CLI nativa) ou depois de instalares o Docker."
-fi
-
-# O doctor sai com 1 quando falta algo: o relatório já diz o quê, por isso
-# não interrompe o assistente (e corre fora do make, que juntaria um
-# "*** Error 1" assustador ao relatório).
-step "5/5 Diagnóstico"
-case "$cli" in
-native) "$BINDIR/dotboot" doctor || true ;;
-docker) docker run --rm "$IMAGE" doctor || true ;;
-*)
-	if [ "$go_ok" = 1 ] && make build >/dev/null; then
-		bin/dotboot doctor || true
-	fi
-	;;
-esac
+step "4/4 Diagnóstico"
+# O doctor sai com 1 quando falta algo: o relatório já diz o quê.
+"$BINDIR/dotboot" doctor || true
 
 echo
-echo "Pronto. Os comandos todos: make help"
+echo "Pronto. Abre a interface com: dotboot"
+echo "(se o comando não for encontrado, acrescenta $BINDIR ao PATH)"

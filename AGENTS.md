@@ -2,394 +2,244 @@
 
 ## Project Overview
 
-dotboot is a Go application with several modes sharing one binary:
+dotboot is a terminal tool, in Go, that downloads videos and audio with
+`yt-dlp` and separates songs into stems with `audio-separator`. One binary,
+two faces over the same engine:
 
-- **`dotboot bot`** — Discord bot that downloads videos from social media
-  platforms using `yt-dlp` and uploads them to Discord channels via the
-  `/baixar` slash command. Supports video trimming, a per-guild upload limit
-  derived from the server's boost tier, size-targeted FFmpeg compression for
-  files exceeding it, bounded download concurrency (global and per user),
-  a public-URL policy, exponential backoff retry logic, and two-phase
-  graceful shutdown.
-- **`dotboot download`** — terminal downloader without Discord's limits: no
-  size cap and no compression, best quality by default with an optional
-  resolution cap (`-q 720`), audio-only mode (`-formato mp3|m4a`),
-  playlist/channel support, URL batch files, and resumable "continue"
-  semantics via `--download-archive` + `--continue` + a pending-conversions
-  file. Output is guaranteed MP4/H.264/AAC unless `-formato original` opts out.
-- **`dotboot stems`** — separates a song (URL or local file) into tracks
-  (vocals, drums, bass, guitar, piano, other) with `audio-separator`, and can
-  mix a backing track without some of them (`-sem guitarra`).
-- **`dotboot doctor`** — checks dependencies and configuration and says how
-  to fix each problem. **`dotboot healthcheck`** is the image's HEALTHCHECK.
-  **`dotboot version`** prints the build metadata.
+- **TUI** (`dotboot` with no arguments, or `dotboot tui`) — Bubble Tea v2 +
+  Lip Gloss v2 + Bubbles v2 + Huh v2: a menu, validated forms, a job queue
+  with real progress (bytes, speed, ETA), per-job logs, cancel/retry,
+  diagnostics and settings.
+- **Subcommands** for scripts: `download` (video MP4/original or audio
+  mp3/m4a, quality cap, playlists, batch files, trims, resumable), `stems`
+  (6s/4s/voz presets, keep only some tracks, backing track without some),
+  `doctor` and `version`.
 
-**Stack**: Go 1.24+ (built with 1.27), discordgo, yt-dlp, FFmpeg, Deno,
-audio-separator (stems only), Docker
+Video output is guaranteed MP4/H.264 8-bit/AAC unless the original format is
+requested. There is no Discord bot anymore (removed in favour of the TUI).
+
+**Stack**: Go 1.26+ (built with 1.27), Charm v2 (`charm.land/...`), yt-dlp,
+FFmpeg, Deno, audio-separator (PyTorch CPU), Docker
 
 ## Build Commands
 
 `make` with no target lists everything. The common ones:
 
 ```bash
-make setup            # Post-clone assistant: .env, CLI, images, bot, doctor
+make setup            # Post-clone assistant: install (docker|native), config, doctor
+make run              # Open the TUI from source (go run)
 make build            # bin/dotboot with version ldflags
-make install          # Native CLI into ~/.local/bin (PREFIX=… to change)
-make install-docker   # Docker wrapper (scripts/dotboot-docker) as the CLI
+make install          # Native binary into ~/.local/bin (PREFIX=… to change)
+make install-docker   # Docker wrapper (scripts/dotboot-docker) as `dotboot`
 make deps             # yt-dlp + deno (checksum-verified) and ffmpeg on the host
 make deps-stems       # audio-separator via uv (needs a C compiler)
-make docker-build     # Production image (dotboot:latest)
-make stems-build      # Stems image (dotboot-stems:latest, ~3GB)
-make up / down / logs / ps / dev
+make docker-build     # The single image dotboot:latest (~3GB, includes stems)
+make config           # Edit ~/.config/dotboot/config.env
 make update-ytdlp     # Pin the latest yt-dlp in the Dockerfile and rebuild
 make release-snapshot # GoReleaser in Docker, all platforms into dist/
-
-# Plain Go still works
-go build -o /tmp/dotboot-test ./cmd/dotboot
-go run ./cmd/dotboot download -o /tmp/videos <url>
-
-# Dependency management
-go mod tidy          # Clean up go.mod / go.sum
-go mod verify        # Verify dependency integrity
 ```
 
-The module path is `github.com/abneribeiro/dotboot` (so `go install …@latest`
+The module path is `github.com/abneribeiro/dotboot` (`go install …@latest`
 works; with the repo private it needs `GOPRIVATE=github.com/abneribeiro/*`).
 
 ## Testing
 
-Tests are table-driven, use only the standard `testing` package, and cover
-pure logic (no network, no yt-dlp/audio-separator execution): argument
-building, error classification, input validation, config parsing, CLI flag
-parsing, stem selection, doctor checks with a fake system.
+Tests are table-driven and use only the standard `testing` package.
 
 ```bash
-make check                          # gofmt + vet (incl. integration tag) + go test -race
-go test -run TestBuildArgsCLIMode -v ./internal/downloader
-make cover
+make check                     # gofmt + vet (incl. integration tag) + go test -race
+make test-integration-docker   # real yt-dlp/ffmpeg/audio-separator inside dotboot:latest
 ```
 
-Test files are named `*_test.go` and live alongside the source files they test.
-
-Integration tests are gated behind the `integration` build tag so
-`go test ./...` stays fast and offline. They execute the real tools:
-
-```bash
-make test-integration-docker   # downloader: yt-dlp + ffmpeg + network, inside dotboot:latest
-make test-integration-stems    # stems: a real separation, inside dotboot-stems:latest
-make test-integration          # downloader on the host (needs yt-dlp, ffmpeg, ffprobe)
-```
-
-The `-docker` variants compile the test binary with `go test -c` and run it
-inside the image, so the host needs nothing but Docker.
+- Pure logic is unit-tested: argument building, progress parsers (yt-dlp
+  template, ffmpeg `out_time_us`, tqdm), error classification, validation,
+  config and `config.Save`, stem selection, doctor with a fake system.
+- `internal/jobs` runs whole jobs against **fake binaries** — small `sh`
+  scripts placed on a test `PATH` that imitate yt-dlp, ffprobe, ffmpeg and
+  audio-separator (progress lines, output files). Use this pattern for any
+  new orchestration test: no network, no real tools.
+- `internal/tui` drives the model directly: key messages, job events through
+  the queue channel (`pump`), and assertions on `View()` — including that no
+  line exceeds the terminal width at 60x20/80x24/160x50.
+- Integration tests (`//go:build integration`) execute the real tools and the
+  network; `make test-integration-docker` compiles them with `go test -c` and
+  runs them inside the image, so the host needs only Docker.
 
 ## Linting & Formatting
 
-No linter config (`.golangci.yml`) exists. Use Go's built-in tools
-(`make lint`). Shell scripts are checked with shellcheck in CI. All code must
-be `gofmt`-compliant. Do not configure custom formatters.
+No linter config. `make lint` = gofmt check + `go vet` (with and without the
+integration tag). Shell scripts are checked with shellcheck in CI. All code
+must be `gofmt`-compliant.
 
 ## Code Style Guidelines
 
 ### Architecture
 
 ```
-cmd/dotboot/main.go      Entrypoint: env/config load, slog setup, signal
-                         handling (signal.NotifyContext lives ONLY here),
-                         subcommand dispatch, binary checks, JS runtime pick,
-                         version metadata.
-internal/config/         Env-var configuration with strict validation —
-                         invalid values error out, never fall back silently.
-internal/downloader/     yt-dlp + ffmpeg invocation. BOUNDARY RULE: this
-                         package must NEVER import discordgo. Shared by every
-                         mode. BuildArgs, QualitySort, MP4Sort, mp4Compatible,
-                         compatArgs, encodeArgs, scaleFilter, sortForBudget,
-                         bitratesFor and ValidatePublicURL are pure; Run
-                         executes yt-dlp; EnsureMP4 (compat.go) enforces the
-                         output format; DownloadForDiscord adds work-dir +
-                         size handling; DownloadAudio feeds stems.
-internal/stems/          audio-separator + ffmpeg for stem separation. Same
-                         BOUNDARY RULE (no discordgo, no cli). Presets,
-                         Select, SeparatorArgs, MixArgs, EncodeArgs and
-                         ToWAVArgs are pure; Separate and Export execute.
-internal/bot/            Discord session lifecycle, /baixar handler, upload
-                         limits (limits.go), retry helpers, heartbeat +
-                         gateway watchdog, two-phase graceful shutdown.
-internal/cli/            Terminal modes: download (cli.go) and stems
-                         (stems.go) — flag parsing + orchestration.
-internal/doctor/         Environment report used by `make setup`.
-scripts/                 setup.sh, configure-env.sh, install-deps.sh,
-                         dotboot-docker (wrapper), install.sh (releases).
+cmd/dotboot/main.go    Entrypoint: config load (config.LoadFiles), slog,
+                       signals (signal.NotifyContext lives ONLY here),
+                       dispatch: no args/tui → TUI, download, stems, doctor,
+                       version; binary checks; JS runtime pick.
+internal/config/       Env-var configuration, strict validation, the global
+                       ~/.config/dotboot/config.env and Save.
+internal/procio/       LineWriter (splits on \n AND \r) and TailBuffer.
+internal/downloader/   yt-dlp + ffmpeg. BuildArgs, QualitySort, MP4Sort,
+                       ParseLine, FFmpegFraction, mp4Compatible, compatArgs
+                       are pure; Run executes yt-dlp with progress callbacks;
+                       EnsureMP4 enforces the output format (ConvertHooks);
+                       DownloadAudio feeds stems.
+internal/stems/        audio-separator + ffmpeg. Presets, Select,
+                       SeparatorArgs, MixArgs, EncodeArgs, ToWAVArgs and
+                       ParseTQDM are pure; Separate and Export execute.
+internal/jobs/         THE ENGINE shared by CLI and TUI: NewDownload/NewStems
+                       validate a request; Download.Run/Stems.Run execute it
+                       and report jobs.Event through a Reporter.
+internal/cli/          Subcommands: flag parsing → jobs → text reporter.
+internal/tui/          The TUI: model.go (state/Update), views.go (render),
+                       forms.go (huh), queue.go (job queue), theme.go.
+internal/doctor/       Environment report (Collect for the TUI, Run for CLI).
+scripts/               setup.sh, configure-env.sh, install-deps.sh,
+                       dotboot-docker (wrapper), install.sh (releases).
 ```
 
 Key invariants to preserve:
 
-- **Downloader/Discord boundary**: `internal/downloader` and `internal/stems`
-  have zero Discord knowledge. Callers translate `DownloadError.Kind` into
-  user-facing messages, and add their own hints (the bot appends the
-  `inicio`/`fim` suggestion to `ErrTooLarge`).
-- **Output is always MP4 / H.264 8-bit / AAC**: it is the only combination
-  iPhones, Android and Discord's inline player all decode. Two layers enforce
-  it and BOTH are needed. First, `MP4Sort` asks yt-dlp to *prefer* those codecs
-  (`-S <res>,vcodec:h264,acodec:aac` + `--merge-output-format mp4`) — free, and
-  enough for YouTube up to 1080p, Instagram, TikTok and X. Second, `EnsureMP4`
-  probes what actually landed and fixes it, because a preference is not a
-  guarantee: above 1080p YouTube has no H.264 at all. Note the ordering inside
-  `MP4Sort` — resolution must outrank `vcodec`, or a 480p H.264 would beat a
-  2160p AV1 and `-q 2160` would be silently ignored. `EnsureMP4` copies every
-  stream that is already conformant, so the common path costs one `ffprobe`.
-  Every re-encode — `compatArgs` AND the bot's `encodeArgs` — must carry
-  `-pix_fmt yuv420p`: a 10-bit source would otherwise produce H.264 High10,
-  which has the right codec name and still will not play on an iPhone.
-  `ensureMP4WithinBudget` skips `EnsureMP4` for oversized files precisely
-  because `encodeArgs` guarantees this.
-- **Resolution means the SHORT side**: yt-dlp's `res` is the smaller
-  dimension, and so is everything here. `-q N` is only `-S res:N` (a cap with
-  fallback) — never an `-f [height<=N]` filter, which turned a vertical
-  720x1280 Short into 360x640. The bot's compression ladder uses
-  `scaleFilter`, which scales the short side for the same reason.
-- **Two-phase shutdown** (`internal/bot/bot.go`): the download context derives
-  from `context.Background()`, NOT from the signal context. On shutdown the
-  bot first waits `ShutdownGrace` for in-flight downloads, and only then
-  cancels them. Deriving downloads from the signal context would kill them
-  instantly and defeat the grace period. `closing` and `wg.Add` are guarded by
-  the same mutex (`track`), so no download is added after `wg.Wait` started.
-- **Docker must wait for the grace period**: `stop_grace_period` (compose) /
-  `--stop-timeout` (docker run) must be ≥ `DOTBOOT_SHUTDOWN_GRACE` + 5s. With
-  Docker's default 10s the container is SIGKILLed mid-grace.
+- **One engine, two faces**: validation and orchestration live in
+  `internal/jobs`, never in `cli` or `tui`. Both build a `jobs.DownloadInput`
+  / `jobs.StemsInput`, call `NewDownload`/`NewStems`, then `Run` with a
+  Reporter. `downloader`, `stems` and `jobs` never write to the terminal and
+  never import `cli`/`tui`.
+- **Events, not output**: progress reaches callers as `jobs.Event` (Stage,
+  Fraction/-1, Speed, ETA, Item, Index/Count, Log). An Event's empty fields
+  mean "unchanged". Reporters may be called from several goroutines; the
+  `reporterSink` serializes them.
+- **Real progress, parsed purely**: yt-dlp gets `--newline` and, when
+  `Options.Progress` is set, a `--progress-template` with a marker that
+  `ParseLine` reads (template lines never reach the log). ffmpeg runs with
+  `-progress pipe:1` (`FFmpegFraction`); audio-separator's tqdm bars are read
+  by `ParseTQDM`. `procio.LineWriter` splits on `\r` too — tqdm and ffmpeg
+  rewrite one line with carriage returns.
+- **Output is always MP4 / H.264 8-bit / AAC** (video mode): `MP4Sort` asks
+  yt-dlp to prefer those codecs (resolution must outrank `vcodec` in `-S`, or
+  `-q 2160` would be ignored), and `EnsureMP4` probes and fixes what landed
+  (above 1080p YouTube has no H.264). Every re-encode carries
+  `-pix_fmt yuv420p`: a 10-bit source would otherwise become H.264 High10,
+  which iPhones cannot play.
+- **Resolution means the SHORT side**: `-q N` is only `-S res:N` (a cap with
+  fallback), never an `-f [height<=N]` filter, which turned a vertical
+  720x1280 Short into 360x640.
+- **Pending conversions persist**: in MP4 mode the `--print-to-file` target
+  is `<outdir>/.dotboot-pendentes.txt`. yt-dlp records the archive BEFORE
+  `EnsureMP4` runs, so an interrupted conversion would otherwise leave a
+  `.webm` forever. Deleted only when everything converted. Other modes use a
+  temp file only to learn which files were produced.
+- **Trim + archive don't mix**: a trim never writes the archive, forces
+  `--no-playlist` and has the interval in the file name (`outputTemplate`).
+  Audio uses its own archive (`.dotboot-archive-audio.txt`).
 - **SIGINT, not SIGKILL**: `cmd.Cancel` sends `os.Interrupt` to
-  yt-dlp/ffmpeg/audio-separator with a `WaitDelay` fallback, so `.part` files
-  survive and CLI resume works. After the first signal, `main` restores the
-  default handler, so a second CTRL+C exits immediately.
-- **One work dir per bot download**: `DownloadForDiscord` creates its own
-  `<TempDir>/dotboot-*` directory and returns it in `Result.WorkDir`. The
-  caller MUST `os.RemoveAll` it on every path, error paths included — that
-  single call is what keeps `.part` files, per-format fragments and rejected
-  re-encodes from piling up. Cookies are copied into it per download
-  (`copyCookies`): yt-dlp rewrites the cookie file on exit and concurrent
-  writers would corrupt the original. `stems` uses the same pattern
-  (`dotboot-stems-*`). CLI downloads have no work dir: yt-dlp owns the output
-  names and writes straight to the user's directory.
-- **Pending conversions persist**: the CLI's `--print-to-file` target is
-  `<outdir>/.dotboot-pendentes.txt`, not a temp file. yt-dlp records a video
-  in the archive BEFORE `EnsureMP4` runs, so an interrupted conversion would
-  otherwise leave a `.webm` forever. The list is deleted only when everything
-  in it converted; the next run reprocesses it (`EnsureMP4` is idempotent).
+  yt-dlp/ffmpeg/audio-separator with a `WaitDelay`, so `.part` files survive
+  and resume works. Cancelled jobs return `context.Canceled`; partial
+  success returns an error wrapping `jobs.ErrPartial` plus the Result.
+- **The TUI waits for its children**: `tui.Run` cancels running jobs on exit
+  and waits (`queue.shutdown`) for them, draining the event channel —
+  leaving earlier would orphan a yt-dlp/ffmpeg. The first ctrl+c with jobs
+  running only warns. Jobs run one at a time (CPU-heavy, and parallel yt-dlp
+  only annoys sites). slog is silenced while the TUI owns the screen.
+- **Stems work dirs**: each song gets `<TempDir>/dotboot-stems-*`, always
+  removed; the user's cookie file is copied into the work dir (yt-dlp
+  rewrites it on exit).
 - **`--print-to-file` implies `--simulate`**: `BuildArgs` always emits
-  `--no-simulate` alongside it. Dropping that pair would make the bot print a
-  path and download nothing.
-- **The upload limit is per-guild, never a constant**: it comes from
-  `Guild.PremiumTier` (see `internal/bot/limits.go`) and is resolved per
-  interaction. `DOTBOOT_MAX_FILE_SIZE_MB` is a ceiling that can only lower it.
-- **The interaction token lives 15 minutes**: `interactionDeadline` derives it
-  from the interaction snowflake, and it bounds both the queue wait and the
-  download timeout. Work that would finish after it is work whose result can
-  never be delivered — but the user is always told (`editWithError`).
-- **Trim + archive don't mix**: a trimmed download must not write to the
-  download archive (it would mark the full video as done forever), forces
-  `--no-playlist`, and has its interval in the file name (`outputTemplate`):
-  with the full video's name, yt-dlp would answer "already downloaded".
-  Audio-only downloads use their own archive (`.dotboot-archive-audio.txt`)
-  because the archive stores IDs, not formats.
-- **Bounded concurrency**: the bot acquires a semaphore (`MaxConcurrent`)
-  before each download and a per-user slot (`MaxPerUser`, `userLimiter`)
-  before deferring; `wg.Add` happens before the goroutine starts so shutdown
-  counts queued work.
-- **Bot URLs must be public**: the handler calls `ValidatePublicURL`
-  (loopback, private, link-local, CGNAT, numeric hosts and local suffixes are
-  refused; `DOTBOOT_ALLOWED_DOMAINS` narrows further). It is syntactic — no
-  DNS — and applies only to the bot; the CLI user is the operator.
-- **The healthcheck tells the truth**: `startHeartbeat` touches
-  `<TempDir>/dotboot.alive` only while the gateway's `LastHeartbeatAck` is
-  fresh, and `dotboot healthcheck` reads the same config, so the path never
-  drifts from `DOTBOOT_TEMP_DIR`. Plain Docker never restarts an unhealthy
-  container, so after `gatewayDeadAfter` (10 min) without the gateway the
-  bot exits with an error and the restart policy takes over.
+  `--no-simulate` with it.
 
 ### Imports
 
 Group imports in blocks separated by blank lines, each sorted alphabetically:
+standard library, third-party (including `charm.land/...`), then internal
+`github.com/abneribeiro/dotboot/...`.
 
-```go
-import (
-    "context"
-    "fmt"
+### Formatting & Naming
 
-    "github.com/bwmarrin/discordgo"
-
-    "github.com/abneribeiro/dotboot/internal/downloader"
-)
-```
-
-1. Standard library
-2. Third-party packages
-3. Internal `github.com/abneribeiro/dotboot/...` packages
-
-### Formatting
-
-- **Indentation**: Tabs (Go standard, enforced by `gofmt`).
-- **Quotes**: Double quotes for strings; backticks for raw/multiline strings.
-- **Trailing commas**: Required in multi-line composite literals (Go syntax).
-- **Struct field alignment**: Align values with tabs for readability.
-- **Line length**: No hard limit; keep lines reasonable (~120 chars).
-
-### Naming Conventions
-
-| Element             | Convention     | Example                          |
-|---------------------|----------------|----------------------------------|
-| Exported functions  | `PascalCase`   | `DownloadForDiscord`, `BuildArgs` |
-| Unexported functions| `camelCase`    | `processDownload`, `respondWithError` |
-| Variables           | `camelCase`    | `startTime`, `optionMap`, `fileSize` |
-| Constants           | `camelCase`    | `maxRetries`, `archiveFileName`  |
-| Files               | `lowercase`    | `handler.go`, `downloader.go`    |
-| Acronyms in names   | Uppercase      | `uniqueID`, `urlParam`           |
-
-Do NOT use `SCREAMING_SNAKE_CASE` for constants — follow Go convention.
+gofmt; tabs; trailing commas in multi-line literals; ~120-char lines.
+`PascalCase` exported, `camelCase` everything else including constants (never
+`SCREAMING_SNAKE_CASE`); acronyms uppercase (`URL`, `ID`); lowercase file
+names.
 
 ### Error Handling
 
-1. **Standard pattern** — Always check and handle errors immediately:
-   ```go
-   if err != nil {
-       return fmt.Errorf("failed to do X: %w", err)
-   }
-   ```
-
-2. **Error wrapping** — Use `fmt.Errorf` with `%w` to preserve the error chain.
-
-3. **Classified download errors** — `internal/downloader` returns
-   `*DownloadError` with a `Kind` (`ErrTimeout`, `ErrTooLarge`, `ErrPrivate`,
-   `ErrLoginRequired`, `ErrRateLimited`, `ErrCanceled`, …). Callers use
-   `errors.As` + a switch on `Kind` to pick user-facing messages — never
-   `strings.Contains` on translated messages. For unclassified failures,
-   `DownloadError.Detail()` gives yt-dlp's last `ERROR:` line; errors that are
-   not `*DownloadError` are internal and never reach the Discord channel.
-
-4. **Discord upload errors** come from discordgo, not the downloader, and are
-   classified with `errors.As` on `*discordgo.RESTError` (HTTP status and the
-   Discord error code, e.g. 40005) in `messageForUploadError` — never by
-   substring on a translated message.
-
-5. **Never discard errors silently** — even best-effort Discord replies log
-   their errors (`respondWithError`/`editWithError`). A failed yt-dlp run in
-   captured mode is logged at Warn with the tail of its output.
-
-6. **Intentionally ignored errors** — Assign to `_` explicitly with a reason
-   (e.g. `_ = godotenv.Load()` — the .env file is optional).
-
-7. **CLI sentinels** — `cli.ErrUsage` (exit 2), `cli.ErrPartial` (exit 1),
-   `cli.ErrInterrupted` (exit 130); a missing binary is `errMissingDeps` in
-   `main`, printed without the log format.
+1. Check errors immediately; wrap with `fmt.Errorf("…: %w", err)`.
+2. `internal/downloader` returns `*DownloadError` with a `Kind`
+   (`ErrTimeout`, `ErrPrivate`, `ErrLoginRequired`, `ErrRateLimited`,
+   `ErrCanceled`, …); classify with `errors.As` + switch, never by substring
+   of translated messages. `Detail()` gives yt-dlp's last `ERROR:` line.
+3. Never discard errors silently; intentionally ignored ones are assigned to
+   `_` with a reason (e.g. the optional `.env`/`config.env` loads).
+4. CLI sentinels: `cli.ErrUsage` (exit 2), `cli.ErrPartial` (exit 1),
+   `cli.ErrInterrupted` (exit 130); a missing binary is `errMissingDeps`.
 
 ### Logging
 
-Structured logging with `log/slog` everywhere (no `log.Printf`). Attach
-context as attrs: `interaction_id`, `url`, `guild_id`, `path`. Level comes
-from `DOTBOOT_LOG_LEVEL`. The default logger is set in `cmd/dotboot/main.go`.
+`log/slog` only (no `log.Printf`), level from `DOTBOOT_LOG_LEVEL`, default
+logger set in `main`. User-facing progress goes through `jobs.Event`, not
+slog.
 
 ### Comments
 
-- Written primarily in **European Portuguese** (project convention).
-- Some technical/operational comments may be in English.
-- Use `//` line comments only (no `/* */` block comments).
-- Place comments above the declaration or block they describe.
-
-### Concurrency Patterns
-
-- **Async processing**: downloads run in goroutines launched from the handler,
-  bounded by the semaphore channel and tracked by the WaitGroup.
-- **Context with timeout**: each bot download gets the smaller of
-  `cfg.DownloadTimeout` and the time left on the interaction token. CLI
-  downloads and stems have no timeout (playlists can take hours) — only
-  signal cancellation.
-- **Defer for cleanup**: always `defer os.RemoveAll(res.WorkDir)` as soon as
-  the work dir exists, before checking the download error.
-
-### Retry Pattern
-
-Network operations use hand-rolled exponential backoff (see
-`internal/bot/retry.go`): classify errors with `isNetworkError()` (string
-matching), retry only on transient network errors, cap delay at
-`maxRetryDelay`, limit attempts to `maxRetries`. Waits go through
-`sleepCtx` so a SIGTERM is observed immediately instead of after the delay.
-
-The REST `http.Client` has a 15-minute `Timeout` on purpose: that timeout
-covers writing the request body, so a short one silently aborts large
-uploads. `ResponseHeaderTimeout` stays short — in Go it only starts after the
-body is fully written. discordgo buffers the whole attachment in memory
-(`MultipartBodyWithJSON`), which is why the compose memory limit is 1536M.
+- Written primarily in **European Portuguese** (project convention); user
+  facing text too. Some technical comments may be in English.
+- `//` line comments only, above the declaration they describe.
 
 ## Configuration
 
-All knobs are env vars parsed in `internal/config` (see `.env.example`):
-`DISCORD_TOKEN`, `DOTBOOT_GUILD_ID`, `DOTBOOT_MAX_FILE_SIZE_MB`,
-`DOTBOOT_DOWNLOAD_TIMEOUT`, `DOTBOOT_MAX_CONCURRENT`, `DOTBOOT_MAX_PER_USER`,
-`DOTBOOT_ALLOWED_DOMAINS`, `DOTBOOT_SHUTDOWN_GRACE`, `DOTBOOT_OUTPUT_DIR`,
-`DOTBOOT_TEMP_DIR`, `DOTBOOT_COOKIES_FILE`, `DOTBOOT_JS_RUNTIMES`,
-`DOTBOOT_MODELS_DIR`, `DOTBOOT_LOG_LEVEL`. A leading `~` is expanded in every
-path (a `.env` never goes through a shell).
+Env vars parsed in `internal/config` (see `.env.example`):
+`DOTBOOT_OUTPUT_DIR`, `DOTBOOT_TEMP_DIR`, `DOTBOOT_COOKIES_FILE`,
+`DOTBOOT_JS_RUNTIMES`, `DOTBOOT_MODELS_DIR`, `DOTBOOT_LOG_LEVEL`. Priority:
+environment > `./.env` > `~/.config/dotboot/config.env` (godotenv never
+overrides). The TUI's Settings and `scripts/configure-env.sh` write the
+config file; `config.Save` rewrites only the keys asked and keeps 0600. A
+leading `~` is expanded in every path.
 
-`DOTBOOT_MAX_FILE_SIZE_MB` defaults to 0 = no ceiling; the effective limit is
-the guild's. `DOTBOOT_GUILD_ID` scopes command registration to one server
-(instant propagation) instead of globally (up to 1 hour).
-
-`DOTBOOT_OUTPUT_DIR` is the CLI **base path**: used when `-o` is absent, and
-the root for relative `-o` values (`-o aulas` → `$base/aulas`); an absolute
-`-o` ignores it. It never affects the bot, which only uses `DOTBOOT_TEMP_DIR`.
-
-`.env` is created and edited by `scripts/configure-env.sh` (`make env`), which
-never overwrites existing keys it was not asked about and never prints the
-token.
+`DOTBOOT_OUTPUT_DIR` is the **base path**: used when `-o` is absent and the
+root of a relative `-o`; an absolute `-o` ignores it.
 
 ## Environment & Dependencies
 
-- **Runtime deps**: `yt-dlp`, `ffmpeg` and `ffprobe` for `bot`/`download`
-  (checked per subcommand by `checkBinaries` in `cmd/dotboot/main.go`; `-h`
-  always works). A JavaScript runtime for yt-dlp's YouTube challenges: Deno
-  (yt-dlp's default, no flag needed) or node (`--js-runtimes node`, picked
-  automatically when it is the only one). `stems` needs `ffmpeg` and
-  `audio-separator`, plus `yt-dlp` only for URL inputs.
-- **Config**: `.env` file (see `.env.example`). Never commit `.env` — it is
-  gitignored and contains secrets.
-- **Go deps**: Managed via Go Modules (`go.mod` / `go.sum`). Keep them
-  minimal — CLI parsing uses stdlib `flag` (with `parseInterspersed` for
-  flags after positional args), not cobra.
+- **Runtime deps**: `yt-dlp`, `ffmpeg`, `ffprobe` (download), plus a JS
+  runtime for YouTube — Deno (yt-dlp's default) or node (`--js-runtimes node`,
+  picked automatically when it is the only one). `stems` needs `ffmpeg` and
+  `audio-separator` (+ `yt-dlp` for URLs). The TUI opens without them; the
+  Diagnostics screen says what is missing.
+- **Go deps**: Charm v2 for the TUI, godotenv, `charmbracelet/x` helpers.
+  CLI parsing stays on stdlib `flag` (`parseInterspersed` allows flags after
+  positional args).
 
 ## Docker
 
-Multi-stage `Dockerfile`. Base images are written literally in the `FROM`
-lines (no ARG) so Dependabot can bump them.
+One image, `dotboot:latest` (target `app`, ~3GB). Base images are written
+literally in the `FROM` lines so Dependabot can bump them.
 
-| Stage         | Purpose                                    |
-|---------------|--------------------------------------------|
-| `base`        | Go + dependency download (cache layer)     |
-| `builder`     | Static binary (`CGO_ENABLED=0`, `-trimpath`, version ldflags) |
-| `tools`       | yt-dlp standalone binary, pinned (`ARG YTDLP_VERSION`) and verified against the release's `SHA2-256SUMS` |
-| `deno`        | Deno binary (yt-dlp's JS runtime)          |
-| `runtime`     | Debian trixie slim + ffmpeg + yt-dlp + deno + non-root user **with a home** (yt-dlp's cache lives there) |
-| `production`  | `runtime` + binary, `ENTRYPOINT /dotboot`, `CMD bot`, `HEALTHCHECK /dotboot healthcheck` |
-| `development` | golang:1.27-trixie + the same tools + Air (pinned), runs `bot` via `--build.args_bin` |
-| `stems-deps`  | Python 3.12 venv with CPU-only PyTorch + audio-separator (+ audioread); has a compiler for diffq |
-| `stems`       | Python slim + the venv + ffmpeg + yt-dlp + deno + binary; `/models` (1777) as a volume |
+| Stage        | Purpose |
+|--------------|---------|
+| `base`       | Go + module download (cache layer) |
+| `builder`    | Static binary (`CGO_ENABLED=0`, `-trimpath`, version ldflags) |
+| `tools`      | yt-dlp standalone binary, pinned (`ARG YTDLP_VERSION`), verified against `SHA2-256SUMS` |
+| `deno`       | Deno binary (yt-dlp's JS runtime) |
+| `stems-deps` | Python 3.12 venv: CPU-only PyTorch, audio-separator, audioread; has gcc for diffq |
+| `app`        | Python slim + venv + ffmpeg + yt-dlp + deno + binary; non-root user with a home; `/models` (1777) volume; `ENTRYPOINT /dotboot` (no args = TUI) |
 
-`make update-ytdlp` rewrites the `ARG YTDLP_VERSION` line with the latest
-release and rebuilds — yt-dlp is the dependency that ages fastest, since it
-breaks whenever YouTube changes.
-
-`docker-compose.yml`: the `videobot` service builds and runs `dotboot:latest`
-(the same tag the CLI wrapper uses) with `init: true`, `stop_grace_period:
-45s` (see the shutdown invariant) and a 1536M memory limit; `--profile dev`
-runs `videobot-dev` with Air and no healthcheck. The production image runs
-the bot by default; pass `download ...` as the container command to use the
-CLI mode.
+`scripts/dotboot-docker` runs the image as the calling user with `$HOME`
+mounted at the same path (so `~`, absolute paths, `~/.config/dotboot` and
+the TUI file picker behave like the native install), the `dotboot-models`
+volume, `-it` when there is a terminal, and same-path mounts for absolute
+paths outside the home.
 
 ## Releases & CI
 
-- `.github/workflows/ci.yml`: gofmt, vet (with and without the integration
-  tag), `go test -race`, cross-compilation for every release target,
-  shellcheck, and a production image build on pushes to main.
+- `.github/workflows/ci.yml`: gofmt, vet (with/without the integration tag),
+  `go test -race`, cross-compilation for every release target, shellcheck,
+  and an image build on pushes to main.
 - `.github/workflows/release.yml`: a `v*` tag runs GoReleaser
   (`.goreleaser.yaml`): linux/darwin/windows × amd64/arm64 archives with
   README, `.env.example` and `scripts/install-deps.sh`, plus `checksums.txt`.
   `scripts/install.sh` depends on the archive name template.
-- `make release VERSION=vX.Y.Z` creates and pushes the tag.
+- Commit messages: English conventional style (`type: summary` + past-tense
+  bullets), no attribution trailers.
