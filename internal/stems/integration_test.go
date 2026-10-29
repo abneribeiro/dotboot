@@ -44,9 +44,14 @@ func TestSepararEExportar(t *testing.T) {
 	// O htdemucs simples é o mais rápido dos Demucs, e produz as mesmas
 	// pistas do 4s.
 	p := Preset{Name: "teste", Model: "htdemucs.yaml", Stems: []string{"vozes", "bateria", "baixo", "outros"}}
-	tracks, err := Separate(ctx, input, filepath.Join(dir, "pistas"), modelDir, p, os.Stdout, os.Stderr)
+	var last float64
+	tracks, err := Separate(ctx, input, filepath.Join(dir, "pistas"), modelDir, p,
+		func(line string) { t.Log(line) }, func(f float64) { last = f })
 	if err != nil {
 		t.Fatalf("Separate falhou: %v", err)
+	}
+	if last < 0.99 {
+		t.Errorf("o progresso do modelo devia chegar a 100%%, ficou em %v", last)
 	}
 	for _, s := range p.Stems {
 		if tracks[s] == "" {

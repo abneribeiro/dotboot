@@ -1,22 +1,22 @@
 // Package stems separa uma música nas suas pistas (vozes, bateria, baixo,
 // guitarra, piano…) com o audio-separator, e mistura ou converte o resultado
-// com o ffmpeg. Regra de fronteira, como no downloader: não importa discordgo
-// nem o CLI — o /separar do bot há de usá-lo tal como está.
+// com o ffmpeg. Não conhece a interface: o CLI e a TUI usam-no tal como está.
 package stems
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/abneribeiro/dotboot/internal/procio"
 )
 
 // Preset associa um nome curto (o -modelo do CLI) a um modelo do
@@ -52,12 +52,21 @@ var presets = []Preset{
 		Description: "vozes, bateria, baixo e outros (mais limpo, sem guitarra)",
 	},
 	{
-		// O BS-RoFormer é o melhor a isolar a voz: ideal para karaoke ou
-		// para ficar com a voz a capella.
+		// O MDX-Net (Kim Vocal 2) isola bem a voz e corre depressa no CPU,
+		// mais ou menos à velocidade da música: é o modelo de karaoke por
+		// omissão.
 		Name:        "voz",
+		Model:       "Kim_Vocal_2.onnx",
+		Stems:       []string{"vozes", "instrumental"},
+		Description: "vozes e instrumental, para karaoke (rápido)",
+	},
+	{
+		// O BS-RoFormer é o melhor a isolar a voz, mas é um transformer
+		// grande: no CPU demora cerca de 20 vezes a duração da música.
+		Name:        "voz-hq",
 		Model:       "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
 		Stems:       []string{"vozes", "instrumental"},
-		Description: "vozes e instrumental (o melhor para karaoke)",
+		Description: "vozes e instrumental na melhor qualidade (muito lento no CPU)",
 	},
 }
 
@@ -263,10 +272,28 @@ func MixArgs(inputs []string, output, format, title string) []string {
 	return append(args, "-metadata", "title="+title, "-y", output)
 }
 
+// tqdmPercent apanha a percentagem das barras do tqdm que o audio-separator
+// escreve no stderr ("  45%|████▌     | 9/20 [00:10<00:12, …]").
+var tqdmPercent = regexp.MustCompile(`(\d{1,3})%\|`)
+
+// ParseTQDM devolve a fração de uma linha de progresso do tqdm.
+func ParseTQDM(line string) (float64, bool) {
+	m := tqdmPercent.FindStringSubmatch(line)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n > 100 {
+		return 0, false
+	}
+	return float64(n) / 100, true
+}
+
 // Separate corre o audio-separator sobre input e devolve as pistas escritas em
-// outDir (pista → WAV). O progresso vai para stdout/stderr quando não são
-// nulos; o cancelamento do contexto envia SIGINT, como no downloader.
-func Separate(ctx context.Context, input, outDir, modelDir string, p Preset, stdout, stderr io.Writer) (map[string]string, error) {
+// outDir (pista → WAV). O output vai para log, linha a linha, quando não é
+// nulo; progress recebe a fração da barra do modelo. O cancelamento do
+// contexto envia SIGINT, como no downloader.
+func Separate(ctx context.Context, input, outDir, modelDir string, p Preset, log func(string), progress func(float64)) (map[string]string, error) {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, fmt.Errorf("não foi possível criar %s: %w", outDir, err)
 	}
@@ -278,23 +305,30 @@ func Separate(ctx context.Context, input, outDir, modelDir string, p Preset, std
 	cmd := exec.CommandContext(ctx, "audio-separator", SeparatorArgs(input, outDir, modelDir, p)...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 10 * time.Second
-	// Sem destino para o output (uso não interativo), guarda-se o fim para a
-	// mensagem de erro.
-	var captured bytes.Buffer
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	if stdout == nil {
-		cmd.Stdout = &captured
-	}
-	if stderr == nil {
-		cmd.Stderr = &captured
-	}
 
-	if err := cmd.Run(); err != nil {
+	captured := &procio.TailBuffer{Max: 4096}
+	lines := procio.NewLineWriter(func(line string) {
+		if f, ok := ParseTQDM(line); ok {
+			if progress != nil {
+				progress(f)
+			}
+			return
+		}
+		fmt.Fprintln(captured, line)
+		if log != nil {
+			log(line)
+		}
+	})
+	cmd.Stdout, cmd.Stderr = lines, lines
+
+	err := cmd.Run()
+	lines.Flush()
+	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		if out := strings.TrimSpace(captured.String()); out != "" {
-			return nil, fmt.Errorf("audio-separator falhou: %w\n%s", err, tail(out, 1024))
+			return nil, fmt.Errorf("audio-separator falhou: %w\n%s", err, procio.Tail(out, 1024))
 		}
 		return nil, fmt.Errorf("audio-separator falhou: %w", err)
 	}
@@ -353,15 +387,7 @@ func runFFmpeg(ctx context.Context, args []string) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("ffmpeg falhou: %w\n%s", err, tail(strings.TrimSpace(string(out)), 1024))
+		return fmt.Errorf("ffmpeg falhou: %w\n%s", err, procio.Tail(strings.TrimSpace(string(out)), 1024))
 	}
 	return nil
-}
-
-// tail devolve os últimos n bytes de s.
-func tail(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[len(s)-n:]
 }

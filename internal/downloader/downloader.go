@@ -1,6 +1,6 @@
-// Package downloader encapsula a invocação do yt-dlp e do ffmpeg.
-// Regra de fronteira: este pacote NUNCA importa discordgo — é partilhado
-// pelo bot e pelo modo CLI.
+// Package downloader encapsula a invocação do yt-dlp e do ffmpeg. Não conhece
+// a interface (CLI ou TUI): o progresso sai por callbacks e o output por
+// io.Writer, e quem chama decide como os mostrar.
 package downloader
 
 import (
@@ -14,27 +14,18 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/abneribeiro/dotboot/internal/procio"
 )
-
-// tailBuffer guarda apenas os últimos max bytes escritos. Permite classificar
-// as linhas finais de erro do yt-dlp sem acumular o progresso de uma playlist
-// inteira em memória.
-type tailBuffer struct {
-	buf []byte
-	max int
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.max {
-		t.buf = t.buf[len(t.buf)-t.max:]
-	}
-	return len(p), nil
-}
 
 // Run executa o yt-dlp com as opções fornecidas. O cancelamento do contexto
 // envia SIGINT (não SIGKILL) para o yt-dlp finalizar os ficheiros .part —
 // é isso que torna o resume (--continue) fiável após interrupções.
+//
+// O stdout é lido linha a linha: com o.Progress definido, as linhas de
+// progresso e as mudanças de fase (ver ParseLine) vão para o callback; as
+// restantes seguem para o.Stdout. O stderr vai para o.Stderr e para um tail
+// que serve para classificar o erro.
 func Run(ctx context.Context, o Options) error {
 	args := BuildArgs(o)
 	slog.Debug("a executar yt-dlp", "args", args)
@@ -43,166 +34,37 @@ func Run(ctx context.Context, o Options) error {
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 10 * time.Second
 
-	// Modo capturado (bot): todo o output vai para classificação de erros.
-	if o.Stdout == nil && o.Stderr == nil {
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			dlErr := classify(string(output), ctx.Err(), err)
-			// Sem isto o motivo real (bot-check, 403, formato em falta…) só
-			// aparecia em debug, e o log dizia apenas "exit status 1". Um
-			// cancelamento não é uma falha do yt-dlp.
-			if dlErr.Kind != ErrCanceled {
-				slog.Warn("yt-dlp falhou", "err", err, "output", tail(string(output), 2048))
-			}
-			return dlErr
-		}
-		return nil
-	}
-
-	// Modo streaming (CLI): output em direto, com um tail do stderr para
-	// classificação caso falhe.
-	tail := &tailBuffer{max: 8 * 1024}
-	cmd.Stdout = o.Stdout
+	tail := &procio.TailBuffer{Max: 16 * 1024}
+	cmd.Stderr = tail
 	if o.Stderr != nil {
 		cmd.Stderr = io.MultiWriter(o.Stderr, tail)
-	} else {
-		cmd.Stderr = tail
 	}
+	stdout := procio.NewLineWriter(func(line string) {
+		if o.Progress != nil {
+			if p, ok := ParseLine(line); ok {
+				o.Progress(p)
+				// As linhas do template são só para o callback.
+				if strings.HasPrefix(line, progressMarker) {
+					return
+				}
+			}
+		}
+		if o.Stdout != nil {
+			fmt.Fprintln(o.Stdout, line)
+		}
+	})
+	cmd.Stdout = stdout
 
-	if err := cmd.Run(); err != nil {
-		return classify(string(tail.buf), ctx.Err(), err)
+	err := cmd.Run()
+	stdout.Flush()
+	if err != nil {
+		dlErr := classify(tail.String(), ctx.Err(), err)
+		if dlErr.Kind != ErrCanceled {
+			slog.Debug("yt-dlp falhou", "err", err, "output", procio.Tail(tail.String(), 2048))
+		}
+		return dlErr
 	}
 	return nil
-}
-
-// DiscordOpts parametriza um download destinado a upload no Discord.
-type DiscordOpts struct {
-	MaxFileSize int64 // limite de upload em bytes, já com margens aplicadas
-	TempDir     string
-	CookiesFile string // ver Options.CookiesFile; copiado para o WorkDir
-	JSRuntimes  string // ver Options.JSRuntimes
-}
-
-// Result descreve o ficheiro pronto a enviar para o Discord.
-type Result struct {
-	// Path é o ficheiro final (já dentro do limite de tamanho).
-	Path string
-
-	// WorkDir é o diretório privado deste download. O chamador tem SEMPRE de
-	// o remover com os.RemoveAll, mesmo quando DownloadForDiscord devolve
-	// erro — é o que garante que fragmentos, .part e comprimidos parciais
-	// não se acumulam em TempDir.
-	WorkDir string
-
-	// Name é o nome do anexo a enviar, com a extensão real do contentor.
-	Name string
-}
-
-const mib = 1024 * 1024
-
-// sortForBudget escolhe a resolução preferida em função do orçamento de
-// upload: não vale a pena descarregar 4K para depois recomprimir até 20MB,
-// mas com 100MB disponíveis 1080p passa muitas vezes sem recompressão.
-func sortForBudget(maxSize int64) string {
-	if maxSize <= 24*mib {
-		return "res:720"
-	}
-	return "res:1080"
-}
-
-// downloadCap é um travão de sanidade para o --max-filesize: impede
-// descarregar ficheiros absurdos que nunca caberiam nem depois de comprimir,
-// mas fica muito acima do limite de upload para não roubar à compressão o
-// material com que trabalhar.
-func downloadCap(maxSize int64) int64 {
-	const floor = 500 * mib
-	if cap := maxSize * 25; cap > floor {
-		return cap
-	}
-	return floor
-}
-
-// DownloadForDiscord descarrega um único vídeo para um diretório temporário
-// exclusivo, garante que cabe em MaxFileSize (recodificando com ffmpeg se
-// preciso) e devolve o resultado. O Result.WorkDir devolvido tem de ser
-// removido pelo chamador em todos os casos, incluindo os de erro.
-// O timeout vem do contexto do chamador.
-func DownloadForDiscord(ctx context.Context, url string, sec *Section, o DiscordOpts) (Result, error) {
-	slog.Info("a iniciar download para Discord", "url", url)
-
-	// Um diretório por download: isola goroutines concorrentes e reduz a
-	// limpeza a um único os.RemoveAll.
-	workDir, err := os.MkdirTemp(o.TempDir, "dotboot-")
-	if err != nil {
-		return Result{}, fmt.Errorf("não foi possível criar o diretório temporário: %w", err)
-	}
-	res := Result{WorkDir: workDir}
-
-	pathFile := filepath.Join(workDir, "final.path")
-
-	cookies, err := copyCookies(o.CookiesFile, workDir)
-	if err != nil {
-		return res, err
-	}
-
-	opts := Options{
-		URLs: []string{url},
-		// %(title).80B trunca a 80 bytes (não runes), o que é seguro com
-		// títulos unicode; --restrict-filenames mantém o nome em ASCII.
-		OutputTemplate:    filepath.Join(workDir, "%(title).80B.%(ext)s"),
-		Format:            "bv*+ba/b",
-		FormatSort:        MP4Sort(sortForBudget(o.MaxFileSize)),
-		MaxFileSize:       downloadCap(o.MaxFileSize),
-		RestrictFilenames: true,
-		PrintToFile:       pathFile,
-		NoPlaylist:        true,
-		MergeFormat:       "mp4",
-		Quiet:             true,
-		Section:           sec,
-		CookiesFile:       cookies,
-		JSRuntimes:        o.JSRuntimes,
-	}
-
-	if err := Run(ctx, opts); err != nil {
-		return res, err
-	}
-
-	downloadedFile, err := finalFile(workDir, pathFile)
-	if err != nil {
-		return res, err
-	}
-
-	downloadedFile, err = ensureMP4WithinBudget(ctx, downloadedFile, o.MaxFileSize)
-	if err != nil {
-		return res, err
-	}
-
-	processedFile, err := validateAndProcessVideo(ctx, downloadedFile, o.MaxFileSize, workDir)
-	res.Path = processedFile
-	res.Name = filepath.Base(processedFile)
-	if err != nil {
-		return res, err
-	}
-
-	slog.Info("vídeo processado com sucesso", "path", processedFile, "name", res.Name)
-	return res, nil
-}
-
-// ensureMP4WithinBudget aplica o EnsureMP4 ao ficheiro descarregado, exceto
-// quando este já excede o limite de upload: nesse caso o validateAndProcessVideo
-// vai recodificá-lo de qualquer forma, e a sua saída já é H.264/AAC em MP4
-// (ver encode, em compress.go). Converter aqui seria recodificar duas vezes.
-//
-// Um erro a medir o tamanho não é fatal: converte-se à mesma, porque a garantia
-// de formato importa mais do que a otimização.
-func ensureMP4WithinBudget(ctx context.Context, path string, maxSize int64) (string, error) {
-	if info, err := os.Stat(path); err == nil && info.Size() > maxSize {
-		slog.Debug("conversão adiada: o ficheiro vai ser recomprimido na mesma",
-			"path", path, "size_bytes", info.Size(), "limit_bytes", maxSize)
-		return path, nil
-	}
-	// Sem progress: no bot ninguém está a ver um terminal.
-	return EnsureMP4(ctx, path, nil)
 }
 
 // AudioOpts parametriza um DownloadAudio.
@@ -210,15 +72,15 @@ type AudioOpts struct {
 	CookiesFile string // ver Options.CookiesFile; copiado para o workDir
 	JSRuntimes  string // ver Options.JSRuntimes
 
-	// Stdout/Stderr recebem o progresso do yt-dlp em direto (CLI).
-	Stdout io.Writer
-	Stderr io.Writer
+	// Progress, Stdout e Stderr: ver Options.
+	Progress func(Progress)
+	Stdout   io.Writer
+	Stderr   io.Writer
 }
 
 // DownloadAudio descarrega só o áudio de url para workDir, em WAV — sem
 // perdas, que é o que a separação de stems precisa à entrada — e devolve o
-// caminho do ficheiro. Ao contrário do DownloadForDiscord, o workDir é do
-// chamador, que o cria e remove.
+// caminho do ficheiro. O workDir é do chamador, que o cria e remove.
 func DownloadAudio(ctx context.Context, url string, sec *Section, workDir string, o AudioOpts) (string, error) {
 	pathFile := filepath.Join(workDir, "final.path")
 
@@ -237,6 +99,7 @@ func DownloadAudio(ctx context.Context, url string, sec *Section, workDir string
 		Section:        sec,
 		CookiesFile:    cookies,
 		JSRuntimes:     o.JSRuntimes,
+		Progress:       o.Progress,
 		Stdout:         o.Stdout,
 		Stderr:         o.Stderr,
 	}
@@ -252,8 +115,8 @@ const cookiesFileName = "cookies.txt"
 
 // copyCookies copia o ficheiro de cookies para workDir e devolve o caminho da
 // cópia ("" quando não há cookies). O yt-dlp reescreve o ficheiro no fim de
-// cada execução: com vários downloads em paralelo a escrever no original, um
-// acabaria por o deixar truncado — e o 0600 é porque são credenciais.
+// cada execução, e o original do utilizador não deve ser tocado — e o 0600 é
+// porque são credenciais.
 func copyCookies(src, workDir string) (string, error) {
 	if src == "" {
 		return "", nil

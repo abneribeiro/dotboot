@@ -1,53 +1,32 @@
-// Package config carrega a configuração da aplicação a partir de variáveis
-// de ambiente, com valores por omissão sensatos. Valores inválidos resultam
-// em erro — nunca em fallback silencioso.
+// Package config carrega a configuração do dotboot a partir de variáveis de
+// ambiente, com valores por omissão sensatos. Valores inválidos resultam em
+// erro — nunca em fallback silencioso.
+//
+// As variáveis podem vir do ambiente, de um .env no diretório atual ou do
+// ficheiro global ~/.config/dotboot/config.env (ver LoadFiles), por esta
+// ordem de prioridade.
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
-	"time"
+
+	"github.com/joho/godotenv"
 )
 
-// Config agrega toda a configuração partilhada pelo bot e pelo modo CLI.
+// Config agrega a configuração do CLI e da TUI.
 type Config struct {
-	// DiscordToken é exigido apenas pelo subcomando bot (DISCORD_TOKEN).
-	DiscordToken string
-
-	// MaxFileSizeMB é um teto opcional para o upload do bot, em megabytes
-	// (DOTBOOT_MAX_FILE_SIZE_MB). Zero — o default — significa "sem teto":
-	// o limite é o que o Discord permite no servidor onde o comando corre
-	// (ver internal/bot/limits.go). Um valor definido nunca aumenta esse
-	// limite, apenas o baixa. Não se aplica ao modo CLI.
-	MaxFileSizeMB int
-
-	// GuildID, quando definido (DOTBOOT_GUILD_ID), regista o comando apenas
-	// nesse servidor, com propagação instantânea — útil em desenvolvimento.
-	// Vazio regista globalmente (propagação até 1 hora).
-	GuildID string
-
-	// DownloadTimeout limita cada download do bot (DOTBOOT_DOWNLOAD_TIMEOUT,
-	// default 10m, sintaxe de time.ParseDuration). Não se aplica ao modo CLI.
-	DownloadTimeout time.Duration
-
-	// MaxConcurrent limita downloads simultâneos no bot
-	// (DOTBOOT_MAX_CONCURRENT, default 3).
-	MaxConcurrent int
-
-	// ShutdownGrace é o tempo que o bot espera por downloads em curso
-	// antes de os cancelar no encerramento (DOTBOOT_SHUTDOWN_GRACE, default 30s).
-	ShutdownGrace time.Duration
-
-	// OutputDir é o caminho base de saída do modo CLI (DOTBOOT_OUTPUT_DIR):
-	// usado quando -o não é passado, e raiz de um -o relativo. Um -o absoluto
-	// ignora-o. Vazio = diretório atual. Não se aplica ao bot, que usa TempDir.
+	// OutputDir é o caminho base de saída (DOTBOOT_OUTPUT_DIR): usado quando
+	// -o não é passado, e raiz de um -o relativo. Um -o absoluto ignora-o.
+	// Vazio = diretório atual.
 	OutputDir string
 
-	// TempDir é onde o bot guarda ficheiros temporários
+	// TempDir guarda o trabalho intermédio da separação de stems
 	// (DOTBOOT_TEMP_DIR, default os.TempDir()).
 	TempDir string
 
@@ -55,9 +34,9 @@ type Config struct {
 	LogLevel slog.Level
 
 	// CookiesFile é um ficheiro de cookies em formato Netscape
-	// (DOTBOOT_COOKIES_FILE), passado ao yt-dlp com --cookies em ambos os
-	// modos. Resolve a verificação "não és um robô" do YouTube, a restrição
-	// de idade e o conteúdo que exige login. Tem de existir quando definido.
+	// (DOTBOOT_COOKIES_FILE), passado ao yt-dlp com --cookies. Resolve a
+	// verificação "não és um robô" do YouTube, a restrição de idade e o
+	// conteúdo que exige login. Tem de existir quando definido.
 	CookiesFile string
 
 	// JSRuntimes é passado ao yt-dlp como --js-runtimes (DOTBOOT_JS_RUNTIMES,
@@ -65,20 +44,40 @@ type Config struct {
 	// com "node" quando o Deno falta e o node existe.
 	JSRuntimes string
 
-	// AllowedDomains, quando não vazio (DOTBOOT_ALLOWED_DOMAINS, separados
-	// por vírgulas), limita o bot a esses domínios e aos seus subdomínios.
-	// Não se aplica ao modo CLI.
-	AllowedDomains []string
-
-	// MaxPerUser limita os downloads de cada utilizador do bot, em curso ou
-	// em fila (DOTBOOT_MAX_PER_USER, default 2): sem ele, uma só pessoa
-	// enchia a fila de todos.
-	MaxPerUser int
-
 	// ModelsDir guarda os modelos da separação de stems, descarregados na
 	// primeira utilização de cada um (DOTBOOT_MODELS_DIR, default
 	// ~/.cache/dotboot/models).
 	ModelsDir string
+}
+
+// Chaves das variáveis de ambiente, partilhadas com a TUI (Definições).
+const (
+	KeyOutputDir   = "DOTBOOT_OUTPUT_DIR"
+	KeyTempDir     = "DOTBOOT_TEMP_DIR"
+	KeyLogLevel    = "DOTBOOT_LOG_LEVEL"
+	KeyCookiesFile = "DOTBOOT_COOKIES_FILE"
+	KeyJSRuntimes  = "DOTBOOT_JS_RUNTIMES"
+	KeyModelsDir   = "DOTBOOT_MODELS_DIR"
+)
+
+// FilePath devolve o ficheiro de configuração global:
+// $XDG_CONFIG_HOME/dotboot/config.env, ou ~/.config/dotboot/config.env.
+func FilePath() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return filepath.Join(dir, "dotboot", "config.env")
+	}
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "dotboot", "config.env")
+	}
+	return filepath.Join(os.TempDir(), "dotboot", "config.env")
+}
+
+// LoadFiles carrega para o ambiente o ./.env e depois o ficheiro global. O
+// godotenv nunca sobrescreve uma variável já definida, por isso a
+// prioridade é: ambiente > ./.env > config.env. Ambos são opcionais.
+func LoadFiles() {
+	_ = godotenv.Load(".env")     // opcional: só existe num projeto
+	_ = godotenv.Load(FilePath()) // opcional: só existe depois de gravar Definições
 }
 
 // Load lê a configuração a partir do ambiente do processo.
@@ -89,57 +88,22 @@ func Load() (*Config, error) {
 // loadFrom é a implementação testável de Load, com o ambiente injetado.
 func loadFrom(getenv func(string) string) (*Config, error) {
 	cfg := &Config{
-		DiscordToken:    getenv("DISCORD_TOKEN"),
-		GuildID:         getenv("DOTBOOT_GUILD_ID"),
-		MaxFileSizeMB:   0,
-		DownloadTimeout: 10 * time.Minute,
-		MaxConcurrent:   3,
-		ShutdownGrace:   30 * time.Second,
-		OutputDir:       getenv("DOTBOOT_OUTPUT_DIR"),
-		TempDir:         os.TempDir(),
-		LogLevel:        slog.LevelInfo,
-		JSRuntimes:      getenv("DOTBOOT_JS_RUNTIMES"),
-		MaxPerUser:      2,
-		ModelsDir:       defaultModelsDir(getenv),
+		OutputDir:   getenv(KeyOutputDir),
+		TempDir:     os.TempDir(),
+		LogLevel:    slog.LevelInfo,
+		JSRuntimes:  getenv(KeyJSRuntimes),
+		ModelsDir:   defaultModelsDir(getenv),
+		CookiesFile: getenv(KeyCookiesFile),
 	}
 
-	if v := getenv("DOTBOOT_MAX_FILE_SIZE_MB"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			return nil, fmt.Errorf("DOTBOOT_MAX_FILE_SIZE_MB inválido: %q (usa um inteiro >= 1, ou remove a variável para usar o limite do servidor)", v)
-		}
-		cfg.MaxFileSizeMB = n
-	}
-
-	if v := getenv("DOTBOOT_DOWNLOAD_TIMEOUT"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
-			return nil, fmt.Errorf("DOTBOOT_DOWNLOAD_TIMEOUT inválido: %q (usa ex: 10m, 1h30m)", v)
-		}
-		cfg.DownloadTimeout = d
-	}
-
-	if v := getenv("DOTBOOT_MAX_CONCURRENT"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			return nil, fmt.Errorf("DOTBOOT_MAX_CONCURRENT inválido: %q (usa um inteiro >= 1)", v)
-		}
-		cfg.MaxConcurrent = n
-	}
-
-	if v := getenv("DOTBOOT_SHUTDOWN_GRACE"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < 0 {
-			return nil, fmt.Errorf("DOTBOOT_SHUTDOWN_GRACE inválido: %q (usa ex: 30s, 1m)", v)
-		}
-		cfg.ShutdownGrace = d
-	}
-
-	if v := getenv("DOTBOOT_TEMP_DIR"); v != "" {
+	if v := getenv(KeyTempDir); v != "" {
 		cfg.TempDir = v
 	}
+	if v := getenv(KeyModelsDir); v != "" {
+		cfg.ModelsDir = v
+	}
 
-	if v := getenv("DOTBOOT_LOG_LEVEL"); v != "" {
+	if v := getenv(KeyLogLevel); v != "" {
 		switch strings.ToLower(v) {
 		case "debug":
 			cfg.LogLevel = slog.LevelDebug
@@ -150,35 +114,14 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 		case "error":
 			cfg.LogLevel = slog.LevelError
 		default:
-			return nil, fmt.Errorf("DOTBOOT_LOG_LEVEL inválido: %q (usa debug|info|warn|error)", v)
+			return nil, fmt.Errorf("%s inválido: %q (usa debug|info|warn|error)", KeyLogLevel, v)
 		}
 	}
 
-	if v := getenv("DOTBOOT_MAX_PER_USER"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			return nil, fmt.Errorf("DOTBOOT_MAX_PER_USER inválido: %q (usa um inteiro >= 1)", v)
-		}
-		cfg.MaxPerUser = n
-	}
-
-	if v := getenv("DOTBOOT_ALLOWED_DOMAINS"); v != "" {
-		domains, err := parseDomains(v)
-		if err != nil {
-			return nil, err
-		}
-		cfg.AllowedDomains = domains
-	}
-
-	if v := getenv("DOTBOOT_MODELS_DIR"); v != "" {
-		cfg.ModelsDir = v
-	}
-	cfg.CookiesFile = getenv("DOTBOOT_COOKIES_FILE")
-
-	// O ~ só é expandido pela shell na linha de comandos; num .env ou num
-	// "environment:" do compose chegava aqui literal e criava uma pasta "~".
+	// O ~ só é expandido pela shell na linha de comandos; num .env chegava
+	// aqui literal e criava uma pasta "~".
 	for _, p := range []*string{&cfg.OutputDir, &cfg.TempDir, &cfg.ModelsDir, &cfg.CookiesFile} {
-		expanded, err := expandHome(*p, getenv)
+		expanded, err := ExpandHome(*p, getenv)
 		if err != nil {
 			return nil, err
 		}
@@ -186,43 +129,28 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 	}
 
 	if cfg.CookiesFile != "" {
-		info, err := os.Stat(cfg.CookiesFile)
-		if err != nil {
-			return nil, fmt.Errorf("DOTBOOT_COOKIES_FILE inválido: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("DOTBOOT_COOKIES_FILE inválido: %s não é um ficheiro", cfg.CookiesFile)
+		if err := CheckCookiesFile(cfg.CookiesFile); err != nil {
+			return nil, fmt.Errorf("%s inválido: %w", KeyCookiesFile, err)
 		}
 	}
 
 	return cfg, nil
 }
 
-// parseDomains interpreta DOTBOOT_ALLOWED_DOMAINS: domínios separados por
-// vírgulas, normalizados em minúsculas e sem "*." nem pontos nas pontas. Um
-// URL colado por engano (com esquema ou caminho) é rejeitado em vez de nunca
-// corresponder a nada.
-func parseDomains(v string) ([]string, error) {
-	var domains []string
-	for _, d := range strings.Split(v, ",") {
-		d = strings.ToLower(strings.TrimSpace(d))
-		d = strings.Trim(strings.TrimPrefix(d, "*."), ".")
-		if d == "" {
-			continue
-		}
-		if strings.ContainsAny(d, "/: ") {
-			return nil, fmt.Errorf("DOTBOOT_ALLOWED_DOMAINS inválido: %q (usa só domínios, ex: youtube.com,x.com)", d)
-		}
-		domains = append(domains, d)
+// CheckCookiesFile confirma que path é um ficheiro que existe.
+func CheckCookiesFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
 	}
-	if len(domains) == 0 {
-		return nil, fmt.Errorf("DOTBOOT_ALLOWED_DOMAINS inválido: %q não tem nenhum domínio", v)
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s não é um ficheiro", path)
 	}
-	return domains, nil
+	return nil
 }
 
-// expandHome expande um "~" inicial a partir de $HOME.
-func expandHome(path string, getenv func(string) string) (string, error) {
+// ExpandHome expande um "~" inicial a partir de $HOME.
+func ExpandHome(path string, getenv func(string) string) (string, error) {
 	if path != "~" && !strings.HasPrefix(path, "~/") {
 		return path, nil
 	}
@@ -249,4 +177,72 @@ func defaultModelsDir(getenv func(string) string) string {
 		return filepath.Join(dir, "dotboot", "models")
 	}
 	return filepath.Join(os.TempDir(), "dotboot-models")
+}
+
+// Save grava values (chave → valor) em path, no formato do .env. Preserva as
+// outras linhas e os comentários e substitui só as chaves pedidas; uma chave
+// com valor vazio é removida. Cria a pasta e deixa o ficheiro com 0600 (pode
+// apontar para cookies, que são credenciais).
+func Save(path string, values map[string]string) error {
+	var lines []string
+	if f, err := os.Open(path); err == nil {
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+		}
+		f.Close()
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("erro ao ler %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("erro ao ler %s: %w", path, err)
+	}
+
+	done := make(map[string]bool, len(values))
+	var out []string
+	for _, line := range lines {
+		key, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+		value, wanted := values[key]
+		if !ok || !wanted {
+			out = append(out, line)
+			continue
+		}
+		done[key] = true
+		if value != "" {
+			out = append(out, key+"="+quote(value))
+		}
+	}
+
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !done[k] && values[k] != "" {
+			out = append(out, k+"="+quote(values[k]))
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("não foi possível criar %s: %w", filepath.Dir(path), err)
+	}
+	tmp := path + ".tmp"
+	content := strings.Join(out, "\n")
+	if content != "" {
+		content += "\n"
+	}
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("não foi possível gravar %s: %w", path, err)
+	}
+	return os.Rename(tmp, path)
+}
+
+// quote põe entre aspas um valor com espaços ou caracteres especiais, para o
+// godotenv o ler tal e qual (ex: "/home/ana/Os Meus Vídeos").
+func quote(v string) string {
+	if strings.ContainsAny(v, " \t#\"'\\$") {
+		return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v) + `"`
+	}
+	return v
 }
