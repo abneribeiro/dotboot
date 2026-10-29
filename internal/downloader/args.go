@@ -64,15 +64,6 @@ type Options struct {
 	// MergeFormat força o contentor de saída ("mp4" no bot; vazio no CLI).
 	MergeFormat string
 
-	// MaxFileSize, quando > 0, adiciona --max-filesize: o yt-dlp recusa o
-	// formato antes de descarregar quando já conhece o tamanho. É um travão
-	// antecipado, não substitui a verificação pós-download.
-	MaxFileSize int64
-
-	// RestrictFilenames limita os nomes de saída a ASCII (bot), para que o
-	// nome do anexo enviado ao Discord seja sempre seguro.
-	RestrictFilenames bool
-
 	// PrintToFile, quando definido, faz o yt-dlp escrever o caminho final do
 	// ficheiro nesse ficheiro (--print-to-file after_move:filepath). Implica
 	// --no-simulate: sem ele o --print-to-file cancelaria o download.
@@ -88,12 +79,12 @@ type Options struct {
 	// IgnoreErrors continua a playlist mesmo quando um vídeo falha.
 	IgnoreErrors bool
 
-	// Quiet ativa --no-warnings --quiet (bot). Quando falso, é adicionado
-	// --newline para progresso legível em terminais e logs (CLI).
-	Quiet bool
+	// Progress, quando definido, recebe o progresso e as mudanças de fase do
+	// yt-dlp (ver ParseLine); BuildArgs acrescenta o --progress-template que
+	// as produz. As linhas de progresso não chegam ao Stdout.
+	Progress func(Progress)
 
-	// Stdout/Stderr, quando não nulos, recebem o output do yt-dlp em direto
-	// (CLI). Quando nulos, o output é capturado para classificação de erros (bot).
+	// Stdout/Stderr recebem o output do yt-dlp em direto (podem ser nulos).
 	Stdout io.Writer
 	Stderr io.Writer
 }
@@ -165,17 +156,11 @@ func BuildArgs(o Options) []string {
 	if o.EmbedMetadata {
 		args = append(args, "--embed-metadata", "--embed-thumbnail")
 	}
-	if o.MaxFileSize > 0 {
-		args = append(args, "--max-filesize", strconv.FormatInt(o.MaxFileSize, 10))
-	}
 	if o.CookiesFile != "" {
 		args = append(args, "--cookies", o.CookiesFile)
 	}
 	if o.JSRuntimes != "" {
 		args = append(args, "--js-runtimes", o.JSRuntimes)
-	}
-	if o.RestrictFilenames {
-		args = append(args, "--restrict-filenames")
 	}
 	if o.NoPlaylist {
 		args = append(args, "--no-playlist")
@@ -192,10 +177,11 @@ func BuildArgs(o Options) []string {
 	if o.IgnoreErrors {
 		args = append(args, "--ignore-errors")
 	}
-	if o.Quiet {
-		args = append(args, "--no-warnings", "--quiet")
-	} else {
-		args = append(args, "--newline")
+	// --newline: uma linha por atualização de progresso, em vez de "\r",
+	// legível em logs e pelo ParseLine.
+	args = append(args, "--newline")
+	if o.Progress != nil {
+		args = append(args, "--progress-template", progressTemplate)
 	}
 	if o.BatchFile != "" {
 		args = append(args, "--batch-file", o.BatchFile)

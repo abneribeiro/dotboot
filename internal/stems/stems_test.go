@@ -230,3 +230,23 @@ func argValue(args []string, flag string) string {
 	}
 	return args[i+1]
 }
+
+func TestParseTQDM(t *testing.T) {
+	tests := []struct {
+		line string
+		want float64
+		ok   bool
+	}{
+		{" 45%|████▌     | 9/20 [00:10<00:12,  1.10s/it]", 0.45, true},
+		{"100%|██████████| 20/20 [00:22<00:00]", 1, true},
+		{"  0%|          | 0/20", 0, true},
+		{"2026-10-28 - INFO - Separation complete!", 0, false},
+		{"Volume a 150%", 0, false},
+	}
+	for _, tt := range tests {
+		got, ok := ParseTQDM(tt.line)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("ParseTQDM(%q) = (%v, %v), esperado (%v, %v)", tt.line, got, ok, tt.want, tt.ok)
+		}
+	}
+}

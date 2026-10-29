@@ -28,18 +28,18 @@ func fakeSystem(now time.Time, outputs map[string]string) system {
 	}
 }
 
-func byName(checks []check, name string) check {
+func byName(checks []Check, name string) Check {
 	for _, c := range checks {
-		if c.name == name {
+		if c.Name == name {
 			return c
 		}
 	}
-	return check{name: "em falta: " + name, level: levelFail}
+	return Check{Name: "em falta: " + name, Level: LevelFail}
 }
 
 func TestCollect(t *testing.T) {
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	cfg := &config.Config{TempDir: t.TempDir(), OutputDir: t.TempDir(), DiscordToken: "segredo"}
+	cfg := &config.Config{TempDir: t.TempDir(), OutputDir: t.TempDir()}
 
 	complete := map[string]string{
 		"yt-dlp":          "2026.10.26\n",
@@ -50,25 +50,25 @@ func TestCollect(t *testing.T) {
 	}
 	checks := collect(context.Background(), cfg, fakeSystem(now, complete))
 	for _, c := range checks {
-		if c.level != levelOK {
-			t.Errorf("%s: nível %d (%s), esperado OK num ambiente completo", c.name, c.level, c.detail)
+		if c.Level != LevelOK {
+			t.Errorf("%s: nível %d (%s), esperado OK num ambiente completo", c.Name, c.Level, c.Detail)
 		}
 	}
-	if got := byName(checks, "ffmpeg").detail; got != "7.1.5-0+deb13u1" {
+	if got := byName(checks, "ffmpeg").Detail; got != "7.1.5-0+deb13u1" {
 		t.Errorf("versão do ffmpeg = %q", got)
 	}
-	if got := byName(checks, "JavaScript").detail; got != "deno 2.9.8" {
+	if got := byName(checks, "JavaScript").Detail; got != "deno 2.9.8" {
 		t.Errorf("runtime JS = %q", got)
 	}
 	// O token nunca aparece no relatório.
-	if got := byName(checks, "token").detail; strings.Contains(got, "segredo") {
+	if got := byName(checks, "token").Detail; strings.Contains(got, "segredo") {
 		t.Errorf("o relatório expôs o token: %q", got)
 	}
 }
 
 func TestCollectAmbienteIncompleto(t *testing.T) {
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	cfg := &config.Config{TempDir: t.TempDir(), OutputDir: t.TempDir(), DiscordToken: tokenPlaceholder}
+	cfg := &config.Config{TempDir: t.TempDir(), OutputDir: t.TempDir()}
 
 	checks := collect(context.Background(), cfg, fakeSystem(now, map[string]string{
 		"yt-dlp": "2026.01.10\n", // ~9 meses
@@ -77,29 +77,28 @@ func TestCollectAmbienteIncompleto(t *testing.T) {
 
 	tests := []struct {
 		name string
-		want level
+		want Level
 	}{
-		{"yt-dlp", levelWarn},   // antigo, mas funciona
-		{"ffmpeg", levelFail},   // sem ele não há merge nem conversão
-		{"ffprobe", levelFail},  // sem ele não há verificação de formato
-		{"JavaScript", levelOK}, // o node serve
-		{"stems", levelWarn},    // opcional
-		{"token", levelWarn},    // só o bot precisa
-		{"temporários", levelOK},
-		{"saída", levelOK},
+		{"yt-dlp", LevelWarn},   // antigo, mas funciona
+		{"ffmpeg", LevelFail},   // sem ele não há merge nem conversão
+		{"ffprobe", LevelFail},  // sem ele não há verificação de formato
+		{"JavaScript", LevelOK}, // o node serve
+		{"stems", LevelWarn},    // opcional
+		{"temporários", LevelOK},
+		{"saída", LevelOK},
 	}
 	for _, tt := range tests {
 		c := byName(checks, tt.name)
-		if c.level != tt.want {
-			t.Errorf("%s: nível %d (%s), esperado %d", tt.name, c.level, c.detail, tt.want)
+		if c.Level != tt.want {
+			t.Errorf("%s: nível %d (%s), esperado %d", tt.name, c.Level, c.Detail, tt.want)
 		}
-		if c.level != levelOK && c.fix == "" {
+		if c.Level != LevelOK && c.Fix == "" {
 			t.Errorf("%s: um problema tem de dizer como se resolve", tt.name)
 		}
 	}
 
 	// Sem DOTBOOT_COOKIES_FILE, a linha dos cookies nem aparece.
-	if c := byName(checks, "cookies"); !strings.HasPrefix(c.name, "em falta") {
+	if c := byName(checks, "cookies"); !strings.HasPrefix(c.Name, "em falta") {
 		t.Errorf("verificação de cookies inesperada: %+v", c)
 	}
 }
@@ -141,13 +140,13 @@ func TestVersionAfter(t *testing.T) {
 
 func TestRender(t *testing.T) {
 	var buf bytes.Buffer
-	render(&buf, []check{{name: "a", level: levelWarn, detail: "x", fix: "y"}})
+	render(&buf, []Check{{Name: "a", Level: LevelWarn, Detail: "x", Fix: "y"}})
 	if !strings.Contains(buf.String(), "1 aviso") || !strings.Contains(buf.String(), "→ y") {
 		t.Errorf("relatório inesperado:\n%s", buf.String())
 	}
 
 	buf.Reset()
-	render(&buf, []check{{name: "b", level: levelFail, detail: "x", fix: "z"}})
+	render(&buf, []Check{{Name: "b", Level: LevelFail, Detail: "x", Fix: "z"}})
 	if !strings.Contains(buf.String(), "1 problema") {
 		t.Errorf("relatório inesperado:\n%s", buf.String())
 	}

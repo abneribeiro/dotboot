@@ -1,12 +1,13 @@
-// dotboot — bot Discord e downloader de vídeos baseado em yt-dlp.
+// dotboot — descarrega vídeos e áudio (yt-dlp) e separa músicas em pistas,
+// pelo terminal: uma TUI e subcomandos para scripts.
 //
 // Subcomandos:
 //
-//	dotboot bot          Arranca o bot Discord (/baixar)
-//	dotboot download     Descarrega vídeos via terminal, sem limites do Discord
+//	dotboot              Abre a TUI (num terminal)
+//	dotboot tui          Abre a TUI
+//	dotboot download     Descarrega vídeos ou áudio
 //	dotboot stems        Separa uma música em pistas (vozes, baixo, guitarra…)
 //	dotboot doctor       Verifica dependências e configuração
-//	dotboot healthcheck  Verifica o heartbeat do bot (HEALTHCHECK da imagem)
 //	dotboot version      Mostra a versão
 package main
 
@@ -20,51 +21,33 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
-	"strings"
 	"syscall"
-	"time"
 
-	"github.com/joho/godotenv"
+	"github.com/charmbracelet/x/term"
 
-	"github.com/abneribeiro/dotboot/internal/bot"
 	"github.com/abneribeiro/dotboot/internal/cli"
 	"github.com/abneribeiro/dotboot/internal/config"
 	"github.com/abneribeiro/dotboot/internal/doctor"
+	"github.com/abneribeiro/dotboot/internal/tui"
 )
 
-const usageText = `dotboot — bot Discord e downloader de vídeos (yt-dlp)
+const usageText = `dotboot — vídeos, áudio e stems no terminal (yt-dlp, ffmpeg, audio-separator)
 
 Uso:
-  dotboot bot                        Arranca o bot Discord
-  dotboot download [flags] URL...    Descarrega vídeos via terminal
+  dotboot                            Abre a interface (TUI)
+  dotboot download [flags] URL...    Descarrega vídeos ou áudio
   dotboot stems [flags] URL|FICH...  Separa uma música em pistas (vozes, baixo, guitarra…)
   dotboot doctor                     Verifica dependências e configuração
-  dotboot healthcheck                Verifica se o bot está ligado (Docker)
   dotboot version                    Mostra a versão
   dotboot help                       Mostra esta ajuda
 
-Flags de download (podem vir antes ou depois dos URLs):
-  -o DIR          Diretório de saída; relativo é resolvido sob $DOTBOOT_OUTPUT_DIR
-                  quando definido (default: $DOTBOOT_OUTPUT_DIR ou o diretório atual)
-  -a FICHEIRO     Ficheiro com um URL por linha
-  -q QUALIDADE    best (default) ou a resolução máxima (ex: 1080, 720, 480)
-  -formato FMT    mp4 (default, H.264/AAC que o iPhone e o Android leem),
-                  original (tal como o site serve) ou mp3/m4a (só o áudio)
-  -cookies FICH   Cookies para vídeos que pedem login ou verificação
-  -start TEMPO    Início do recorte, MM:SS ou HH:MM:SS (exige -end e um único URL)
-  -end TEMPO      Fim do recorte
-
 Exemplos:
-  dotboot download https://youtube.com/watch?v=xxxx
-  dotboot download -o ~/Videos https://youtube.com/playlist?list=yyyy
-  dotboot download -a urls.txt -o ~/Videos
-  dotboot download -q 720 -o aulas https://youtube.com/watch?v=xxxx
-  dotboot download -formato mp3 -o musica https://youtube.com/watch?v=xxxx
-
-Re-executar "download" com o mesmo diretório salta os vídeos já descarregados
-(registados em .dotboot-archive.txt) e retoma downloads interrompidos.
+  dotboot download -q 720 -o aulas "https://youtube.com/watch?v=xxxx"
+  dotboot download -formato mp3 -o musica "https://youtube.com/watch?v=xxxx"
+  dotboot stems -sem guitarra ~/Musica/song.mp3
 
 A ajuda completa de cada subcomando: dotboot download -h, dotboot stems -h.
+As definições ficam em ~/.config/dotboot/config.env (editáveis na TUI).
 `
 
 // errMissingDeps marca a falta de um binário externo. É um problema de
@@ -80,14 +63,14 @@ var (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usageText)
-		os.Exit(2)
+	cmd := "tui"
+	if len(os.Args) > 1 {
+		cmd = os.Args[1]
 	}
 
 	// help e version não dependem da configuração: têm de funcionar mesmo
-	// com um .env inválido, que é precisamente quando se vai à procura deles.
-	switch os.Args[1] {
+	// com uma config inválida, que é precisamente quando se vai à procura.
+	switch cmd {
 	case "help", "-h", "--help":
 		fmt.Print(usageText)
 		return
@@ -96,11 +79,13 @@ func main() {
 		return
 	}
 
-	// Carrega variáveis de ambiente do ficheiro .env (se existir).
-	// Não retorna erro se o ficheiro não existir, permitindo usar
-	// variáveis de ambiente do sistema em produção.
-	_ = godotenv.Load()
+	// Sem argumentos e sem terminal (um pipe, um cron), não há TUI para abrir.
+	if len(os.Args) < 2 && !(term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())) {
+		fmt.Fprint(os.Stderr, usageText)
+		os.Exit(2)
+	}
 
+	config.LoadFiles()
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "configuração inválida: %v\n", err)
@@ -110,32 +95,27 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(logger)
 
-	// Os sinais são tratados apenas aqui; ambos os subcomandos recebem o
-	// mesmo contexto e implementam o seu próprio encerramento gracioso.
+	// Os sinais são tratados apenas aqui; todos os modos recebem o mesmo
+	// contexto e cancelam os processos externos com SIGINT.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// Depois do primeiro sinal, o seguinte volta ao comportamento por omissão
-	// e termina o processo de imediato. Sem isto, um segundo CTRL+C durante
-	// os 30s de graça do bot era simplesmente ignorado.
+	// e termina o processo de imediato.
 	context.AfterFunc(ctx, stop)
 
-	switch os.Args[1] {
-	case "bot":
-		err = runBot(ctx, cfg, logger)
+	args := os.Args[min(2, len(os.Args)):]
+	switch cmd {
+	case "tui":
+		configureJSRuntime(cfg, logger)
+		err = tui.Run(ctx, cfg, shortVersion())
 	case "download":
-		err = runDownload(ctx, cfg, logger, os.Args[2:])
+		err = runDownload(ctx, cfg, logger, args)
 	case "stems":
-		err = runStems(ctx, cfg, logger, os.Args[2:])
+		err = runStems(ctx, cfg, logger, args)
 	case "doctor":
 		err = doctor.Run(ctx, cfg, os.Stdout)
-	case "healthcheck":
-		if err := bot.CheckHeartbeat(bot.HeartbeatPath(cfg.TempDir), bot.HeartbeatMaxAge, time.Now()); err != nil {
-			fmt.Fprintf(os.Stderr, "unhealthy: %v\n", err)
-			os.Exit(1)
-		}
-		return
 	default:
-		fmt.Fprintf(os.Stderr, "subcomando desconhecido: %q\n\n%s", os.Args[1], usageText)
+		fmt.Fprintf(os.Stderr, "subcomando desconhecido: %q\n\n%s", cmd, usageText)
 		os.Exit(2)
 	}
 
@@ -154,33 +134,9 @@ func main() {
 		// Já foi reportado; só o código de saída é que muda.
 		os.Exit(1)
 	default:
-		logger.Error("erro fatal", "err", err)
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		os.Exit(1)
 	}
-}
-
-func runBot(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
-	if err := checkBinaries(nil, "yt-dlp", "ffmpeg", "ffprobe"); err != nil {
-		return err
-	}
-	configureJSRuntime(cfg, logger)
-
-	if cfg.DiscordToken == "" {
-		return fmt.Errorf("DISCORD_TOKEN não está definido; define a variável de ambiente antes de executar o bot")
-	}
-	// O prefixo "Bot " é adicionado pelo bot.New. Deixá-lo no token produziria
-	// "Bot Bot <token>" e uma falha de autenticação, por isso remove-se aqui
-	// em vez de apenas avisar.
-	if strings.HasPrefix(cfg.DiscordToken, "Bot ") {
-		logger.Warn("DISCORD_TOKEN começa com \"Bot \" — o prefixo é adicionado automaticamente e foi removido")
-		cfg.DiscordToken = strings.TrimSpace(strings.TrimPrefix(cfg.DiscordToken, "Bot "))
-	}
-
-	b, err := bot.New(cfg, logger)
-	if err != nil {
-		return err
-	}
-	return b.Run(ctx)
 }
 
 func runDownload(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
@@ -259,11 +215,11 @@ func pickJSRuntime(lookPath func(string) (string, error)) (jsRuntime string, fou
 	return "", false
 }
 
-// versionString descreve o binário. Sem -ldflags (go install, go run) usa a
-// informação que o Go embute: a versão do módulo num go install @vX.Y.Z, ou a
-// revisão do git num build local.
-func versionString() string {
-	v, c, d := version, commit, date
+// versionInfo devolve a versão, o commit e a data do binário. Sem -ldflags
+// (go install, go run) usa a informação que o Go embute: a versão do módulo
+// num go install @vX.Y.Z, ou a revisão do git num build local.
+func versionInfo() (v, c, d string) {
+	v, c, d = version, commit, date
 	if info, ok := debug.ReadBuildInfo(); ok {
 		if v == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
 			v = info.Main.Version
@@ -277,7 +233,22 @@ func versionString() string {
 			}
 		}
 	}
+	return v, c, d
+}
 
+// shortVersion é a versão para o cabeçalho da TUI: a tag, ou o commit num
+// build de desenvolvimento.
+func shortVersion() string {
+	v, c, _ := versionInfo()
+	if v == "dev" && c != "" {
+		return "dev " + c
+	}
+	return v
+}
+
+// versionString descreve o binário por extenso (dotboot version).
+func versionString() string {
+	v, c, d := versionInfo()
 	out := "dotboot " + v
 	if c != "" {
 		out += " (" + c

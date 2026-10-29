@@ -20,21 +20,21 @@ import (
 // ErrProblems sinaliza que falta algo essencial. O relatório já foi escrito.
 var ErrProblems = errors.New("o ambiente tem problemas")
 
-type level int
+type Level int
 
 const (
-	levelOK level = iota
-	levelWarn
-	levelFail
+	LevelOK Level = iota
+	LevelWarn
+	LevelFail
 )
 
 // check é uma linha do relatório.
-type check struct {
-	name   string
-	level  level
-	detail string
-	// fix diz como resolver; vazio quando está tudo bem.
-	fix string
+type Check struct {
+	Name   string
+	Level  Level
+	Detail string
+	// Fix diz como resolver; vazio quando está tudo bem.
+	Fix string
 }
 
 const (
@@ -45,9 +45,6 @@ const (
 	// commandTimeout limita cada "--version": o yt-dlp standalone demora a
 	// arrancar na primeira execução, enquanto se descompacta.
 	commandTimeout = 30 * time.Second
-
-	// tokenPlaceholder é o valor do .env.example.
-	tokenPlaceholder = "your_discord_bot_token_here"
 )
 
 // system abstrai o sistema para os testes não dependerem do PATH real.
@@ -60,15 +57,30 @@ type system struct {
 // Run verifica o ambiente e escreve o relatório em w. Devolve ErrProblems
 // quando falta algo sem o qual o dotboot não consegue descarregar.
 func Run(ctx context.Context, cfg *config.Config, w io.Writer) error {
-	sys := system{lookPath: exec.LookPath, output: commandOutput, now: time.Now()}
-	checks := collect(ctx, cfg, sys)
+	checks := Collect(ctx, cfg)
 	render(w, checks)
 	for _, c := range checks {
-		if c.level == levelFail {
+		if c.Level == LevelFail {
 			return ErrProblems
 		}
 	}
 	return nil
+}
+
+// Collect faz as verificações e devolve-as, para quem as queira mostrar à
+// sua maneira (a TUI).
+func Collect(ctx context.Context, cfg *config.Config) []Check {
+	return collect(ctx, cfg, system{lookPath: exec.LookPath, output: commandOutput, now: time.Now()})
+}
+
+// HasFailures reporta se alguma verificação falhou.
+func HasFailures(checks []Check) bool {
+	for _, c := range checks {
+		if c.Level == LevelFail {
+			return true
+		}
+	}
+	return false
 }
 
 func commandOutput(ctx context.Context, name string, args ...string) (string, error) {
@@ -78,158 +90,154 @@ func commandOutput(ctx context.Context, name string, args ...string) (string, er
 	return string(out), err
 }
 
-func collect(ctx context.Context, cfg *config.Config, sys system) []check {
-	checks := []check{
+func collect(ctx context.Context, cfg *config.Config, sys system) []Check {
+	checks := []Check{
 		checkYtdlp(ctx, sys),
 		checkTool(ctx, sys, "ffmpeg", "ffmpeg version "),
 		checkTool(ctx, sys, "ffprobe", "ffprobe version "),
 		checkJSRuntime(ctx, cfg, sys),
 		checkStems(cfg, sys),
-		checkToken(cfg),
+		checkConfigFile(),
 		checkOutputDir(cfg),
 		checkTempDir(cfg),
 	}
 	if cfg.CookiesFile != "" {
 		// O config.Load já garantiu que existe.
-		checks = append(checks, check{name: "cookies", level: levelOK, detail: cfg.CookiesFile})
+		checks = append(checks, Check{Name: "cookies", Level: LevelOK, Detail: cfg.CookiesFile})
 	}
 	return checks
 }
 
-func checkYtdlp(ctx context.Context, sys system) check {
-	c := check{name: "yt-dlp"}
+func checkYtdlp(ctx context.Context, sys system) Check {
+	c := Check{Name: "yt-dlp"}
 	if _, err := sys.lookPath("yt-dlp"); err != nil {
-		c.level, c.detail, c.fix = levelFail, "não encontrado", "make deps (instala em ~/.local/bin)"
+		c.Level, c.Detail, c.Fix = LevelFail, "não encontrado", "make deps (instala em ~/.local/bin)"
 		return c
 	}
 	out, err := sys.output(ctx, "yt-dlp", "--version")
 	if err != nil {
-		c.level, c.detail, c.fix = levelFail, "não arranca: "+firstLine(out), "make deps"
+		c.Level, c.Detail, c.Fix = LevelFail, "não arranca: "+firstLine(out), "make deps"
 		return c
 	}
 
 	version := firstLine(out)
 	released, ok := ytdlpReleaseDate(version)
 	if !ok {
-		c.level, c.detail = levelOK, version
+		c.Level, c.Detail = LevelOK, version
 		return c
 	}
 	age := sys.now.Sub(released)
-	c.detail = fmt.Sprintf("%s (%s)", version, describeAge(age))
+	c.Detail = fmt.Sprintf("%s (%s)", version, describeAge(age))
 	if age > ytdlpMaxAge {
 		// O YouTube muda com frequência e o yt-dlp acompanha: uma versão
 		// antiga é a causa mais comum de downloads que deixam de funcionar.
-		c.level, c.fix = levelWarn, "yt-dlp -U (ou make deps); na imagem Docker: make update-ytdlp"
+		c.Level, c.Fix = LevelWarn, "yt-dlp -U (ou make deps); na imagem Docker: make update-ytdlp"
 	}
 	return c
 }
 
 // checkTool verifica um binário obrigatório e mostra a versão que ele anuncia
 // na primeira linha de "-version" (depois de prefix).
-func checkTool(ctx context.Context, sys system, name, prefix string) check {
-	c := check{name: name}
+func checkTool(ctx context.Context, sys system, name, prefix string) Check {
+	c := Check{Name: name}
 	if _, err := sys.lookPath(name); err != nil {
-		c.level, c.detail, c.fix = levelFail, "não encontrado", "make deps (ou sudo apt install ffmpeg)"
+		c.Level, c.Detail, c.Fix = LevelFail, "não encontrado", "make deps (ou sudo apt install ffmpeg)"
 		return c
 	}
 	out, err := sys.output(ctx, name, "-version")
 	if err != nil {
-		c.level, c.detail, c.fix = levelFail, "não arranca: "+firstLine(out), "reinstala o ffmpeg"
+		c.Level, c.Detail, c.Fix = LevelFail, "não arranca: "+firstLine(out), "reinstala o ffmpeg"
 		return c
 	}
-	c.detail = versionAfter(out, prefix)
-	if c.detail == "" {
-		c.detail = "encontrado"
+	c.Detail = versionAfter(out, prefix)
+	if c.Detail == "" {
+		c.Detail = "encontrado"
 	}
 	return c
 }
 
-func checkJSRuntime(ctx context.Context, cfg *config.Config, sys system) check {
-	c := check{name: "JavaScript"}
+func checkJSRuntime(ctx context.Context, cfg *config.Config, sys system) Check {
+	c := Check{Name: "JavaScript"}
 	if cfg.JSRuntimes != "" {
-		c.detail = cfg.JSRuntimes + " (DOTBOOT_JS_RUNTIMES)"
+		c.Detail = cfg.JSRuntimes + " (DOTBOOT_JS_RUNTIMES)"
 		return c
 	}
 	if _, err := sys.lookPath("deno"); err == nil {
 		out, _ := sys.output(ctx, "deno", "--version")
-		c.detail = "deno " + versionAfter(out, "deno ")
+		c.Detail = "deno " + versionAfter(out, "deno ")
 		return c
 	}
 	if _, err := sys.lookPath("node"); err == nil {
 		out, _ := sys.output(ctx, "node", "--version")
-		c.detail = "node " + firstLine(out) + " (ativado automaticamente; o deno é o recomendado)"
+		c.Detail = "node " + firstLine(out) + " (ativado automaticamente; o deno é o recomendado)"
 		return c
 	}
-	c.level = levelWarn
-	c.detail = "nenhum runtime (deno ou node): o YouTube pode falhar ou ter menos formatos"
-	c.fix = "make deps (instala o deno)"
+	c.Level = LevelWarn
+	c.Detail = "nenhum runtime (deno ou node): o YouTube pode falhar ou ter menos formatos"
+	c.Fix = "make deps (instala o deno)"
 	return c
 }
 
-func checkStems(cfg *config.Config, sys system) check {
-	c := check{name: "stems"}
+func checkStems(cfg *config.Config, sys system) Check {
+	c := Check{Name: "stems"}
 	if _, err := sys.lookPath("audio-separator"); err != nil {
-		c.level = levelWarn
-		c.detail = "audio-separator não encontrado (só para `dotboot stems`)"
-		c.fix = "make deps-stems, ou a imagem Docker: make stems-build"
+		c.Level = LevelWarn
+		c.Detail = "audio-separator não encontrado (só para `dotboot stems`)"
+		c.Fix = "make deps-stems, ou a imagem Docker: make stems-build"
 		return c
 	}
-	c.detail = "audio-separator; modelos em " + cfg.ModelsDir
+	c.Detail = "audio-separator; modelos em " + cfg.ModelsDir
 	return c
 }
 
-func checkToken(cfg *config.Config) check {
-	c := check{name: "token"}
-	switch cfg.DiscordToken {
-	case "":
-		c.level, c.detail, c.fix = levelWarn, "DISCORD_TOKEN não definido (só é preciso para o bot)", "make env"
-	case tokenPlaceholder:
-		c.level, c.detail, c.fix = levelWarn, "DISCORD_TOKEN ainda tem o valor do .env.example", "make env"
-	default:
-		// Nunca se mostra o token, nem parte dele.
-		c.detail = "definido"
+// checkConfigFile mostra onde ficam as definições gravadas pela TUI.
+func checkConfigFile() Check {
+	path := config.FilePath()
+	c := Check{Name: "definições", Detail: path}
+	if _, err := os.Stat(path); err != nil {
+		c.Detail += " (ainda não existe; os valores por omissão chegam)"
 	}
 	return c
 }
 
-func checkOutputDir(cfg *config.Config) check {
-	c := check{name: "saída"}
+func checkOutputDir(cfg *config.Config) Check {
+	c := Check{Name: "saída"}
 	dir := cfg.OutputDir
 	if dir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			c.level, c.detail = levelWarn, "não foi possível determinar o diretório atual"
+			c.Level, c.Detail = LevelWarn, "não foi possível determinar o diretório atual"
 			return c
 		}
 		dir = wd
 	}
-	c.detail = dir
+	c.Detail = dir
 
 	info, err := os.Stat(dir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		c.detail += " (é criada no primeiro download)"
+		c.Detail += " (é criada no primeiro download)"
 	case err != nil:
-		c.level, c.fix = levelWarn, err.Error()
+		c.Level, c.Fix = LevelWarn, err.Error()
 	case !info.IsDir():
-		c.level, c.fix = levelFail, "DOTBOOT_OUTPUT_DIR aponta para um ficheiro"
+		c.Level, c.Fix = LevelFail, "DOTBOOT_OUTPUT_DIR aponta para um ficheiro"
 	case !writable(dir):
 		// Só o modo CLI escreve aqui, e -o pode apontar para outro sítio.
-		c.level, c.fix = levelWarn, "sem permissão de escrita: define DOTBOOT_OUTPUT_DIR ou usa -o"
+		c.Level, c.Fix = LevelWarn, "sem permissão de escrita: define DOTBOOT_OUTPUT_DIR ou usa -o"
 	}
 	return c
 }
 
-func checkTempDir(cfg *config.Config) check {
-	c := check{name: "temporários", detail: cfg.TempDir}
+func checkTempDir(cfg *config.Config) Check {
+	c := Check{Name: "temporários", Detail: cfg.TempDir}
 	info, err := os.Stat(cfg.TempDir)
 	switch {
 	case err != nil:
-		c.level, c.fix = levelFail, "DOTBOOT_TEMP_DIR não existe: "+err.Error()
+		c.Level, c.Fix = LevelFail, "DOTBOOT_TEMP_DIR não existe: "+err.Error()
 	case !info.IsDir():
-		c.level, c.fix = levelFail, "DOTBOOT_TEMP_DIR aponta para um ficheiro"
+		c.Level, c.Fix = LevelFail, "DOTBOOT_TEMP_DIR aponta para um ficheiro"
 	case !writable(cfg.TempDir):
-		c.level, c.fix = levelFail, "sem permissão de escrita em DOTBOOT_TEMP_DIR"
+		c.Level, c.Fix = LevelFail, "sem permissão de escrita em DOTBOOT_TEMP_DIR"
 	}
 	return c
 }
@@ -301,24 +309,24 @@ func firstLine(s string) string {
 
 // render escreve o relatório: uma linha por verificação, com a solução por
 // baixo quando há uma, e um resumo no fim.
-func render(w io.Writer, checks []check) {
+func render(w io.Writer, checks []Check) {
 	fmt.Fprintln(w, "dotboot doctor")
 	fmt.Fprintln(w)
 
 	var warnings, failures int
 	for _, c := range checks {
 		icon := "✅"
-		switch c.level {
-		case levelWarn:
+		switch c.Level {
+		case LevelWarn:
 			icon = "⚠️ "
 			warnings++
-		case levelFail:
+		case LevelFail:
 			icon = "❌"
 			failures++
 		}
-		fmt.Fprintf(w, "  %s %-12s %s\n", icon, c.name, c.detail)
-		if c.fix != "" {
-			fmt.Fprintf(w, "     %-12s → %s\n", "", c.fix)
+		fmt.Fprintf(w, "  %s %-12s %s\n", icon, c.Name, c.Detail)
+		if c.Fix != "" {
+			fmt.Fprintf(w, "     %-12s → %s\n", "", c.Fix)
 		}
 	}
 
