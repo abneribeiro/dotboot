@@ -1,5 +1,5 @@
 # ============================================================
-# Multi-stage Dockerfile: produção, desenvolvimento e stems
+# Multi-stage Dockerfile: uma só imagem com tudo (dotboot:latest)
 # ============================================================
 #
 # As imagens base estão escritas por extenso nos FROM (sem ARG) para o
@@ -80,75 +80,6 @@ RUN set -eux; \
 FROM denoland/deno:bin-2.9.8 AS deno
 
 # ============================================================
-# Runtime stage: o que a produção precisa para correr
-# ============================================================
-FROM debian:trixie-slim AS runtime
-
-# - ca-certificates: certificados TLS para ligações HTTPS
-# - ffmpeg: merge, conversão e compressão (traz também o ffprobe)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
-
-COPY --from=tools /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
-COPY --from=deno /deno /usr/local/bin/deno
-
-# Utilizador sem privilégios, COM home: é lá que o yt-dlp guarda a cache (o
-# player do YouTube e as soluções dos desafios JS). Sem uma home gravável a
-# cache ficava desligada em silêncio e cada download repetia esse trabalho.
-RUN useradd --system --uid 10001 --create-home --home-dir /home/dotboot dotboot
-WORKDIR /home/dotboot
-
-# ============================================================
-# Production stage: imagem final do bot
-# ============================================================
-FROM runtime AS production
-
-COPY --from=builder /dotboot /dotboot
-
-USER dotboot
-
-# O healthcheck lê a mesma configuração do bot (DOTBOOT_TEMP_DIR incluído), por
-# isso o caminho do heartbeat nunca dessincroniza; e o heartbeat só avança
-# enquanto o gateway do Discord responde.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD ["/dotboot", "healthcheck"]
-
-# O CMD é o subcomando por omissão e pode ser substituído,
-# ex: docker run dotboot download -o /videos <url>
-ENTRYPOINT ["/dotboot"]
-CMD ["bot"]
-
-# ============================================================
-# Development stage: live reload com Air
-# ============================================================
-# Debian, como a produção: mesmo ffmpeg, mesmo yt-dlp, mesmo Deno — um bug
-# que só aparece com o ffmpeg do Alpine não é um bug que interesse caçar.
-FROM golang:1.27-trixie AS development
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
-
-COPY --from=tools /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
-COPY --from=deno /deno /usr/local/bin/deno
-
-# Air fixado por versão (o install.sh do master instalava o que lá estivesse).
-RUN go install github.com/air-verse/air@v1.67.4
-
-WORKDIR /app
-
-# Comando padrão: executa Air para live reload com configuração inline
-CMD ["air", \
-  "--build.cmd", "go build -o ./tmp/main ./cmd/dotboot", \
-  "--build.bin", "./tmp/main", \
-  "--build.args_bin", "bot", \
-  "--build.delay", "1000", \
-  "--build.exclude_dir", "tmp", \
-  "--build.include_ext", "go", \
-  "--misc.clean_on_exit", "true"]
-
-# ============================================================
 # Stems deps stage: o ambiente Python da separação de stems
 # ============================================================
 # Python 3.12, a versão que o audio-separator e o PyTorch suportam melhor.
@@ -169,16 +100,19 @@ RUN python -m venv /opt/stems
 ENV PATH=/opt/stems/bin:$PATH
 
 # O PyTorch vem do índice CPU: o do PyPI traz ~3GB de bibliotecas CUDA que,
-# sem uma GPU NVIDIA, não servem para nada.
-RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch && \
+# sem uma GPU NVIDIA, não servem para nada. O torchvision vem do mesmo índice
+# e na mesma instalação: o do PyPI é compilado contra outro torch, e os
+# modelos MDX-Net falhavam com "operator torchvision::nms does not exist".
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
     pip install --no-cache-dir "audio-separator[cpu]==${AUDIO_SEPARATOR_VERSION}" \
         "audioread==${AUDIOREAD_VERSION}"
 
 # ============================================================
-# Stems stage: separação de música em pistas (dotboot stems)
+# App stage: a imagem final (TUI, download e stems)
 # ============================================================
-# Imagem à parte (~3GB: o PyTorch e as bibliotecas de áudio): o bot não precisa dela.
-FROM python:3.12-slim-trixie AS stems
+# ~3GB, sobretudo o PyTorch: é o preço da separação de stems, e uma só
+# imagem deixa a TUI fazer tudo pelo wrapper sem instalar nada no host.
+FROM python:3.12-slim-trixie AS app
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates ffmpeg && \
@@ -201,5 +135,6 @@ VOLUME /models
 
 USER dotboot
 WORKDIR /home/dotboot
+
+# Sem argumentos abre a TUI (com -it); ex: docker run --rm -it dotboot:latest
 ENTRYPOINT ["/dotboot"]
-CMD ["help"]

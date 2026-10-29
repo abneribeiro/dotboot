@@ -3,8 +3,8 @@
 #   make              mostra os targets
 #   make setup        configura tudo depois do clone (assistente)
 #
-# Variáveis úteis: PREFIX/BINDIR (onde instalar a CLI), IMAGE, STEMS_IMAGE,
-# VERSION (por omissão, o git describe).
+# Variáveis úteis: PREFIX/BINDIR (onde instalar a CLI), IMAGE, VERSION (por
+# omissão, o git describe).
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -18,9 +18,7 @@ PREFIX          ?= $(HOME)/.local
 BINDIR          ?= $(PREFIX)/bin
 DOCKER_CLI_NAME ?= dotboot
 
-IMAGE       ?= dotboot:latest
-STEMS_IMAGE ?= dotboot-stems:latest
-COMPOSE     ?= docker compose
+IMAGE ?= dotboot:latest
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null)
@@ -28,10 +26,6 @@ DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 GORELEASER_IMAGE ?= goreleaser/goreleaser:v2.19.0
-
-# O docker-compose.yml passa-as ao build da imagem (dotboot version).
-export DOTBOOT_VERSION := $(VERSION)
-export DOTBOOT_COMMIT  := $(COMMIT)
 
 # DOCKER_BUILD_FLAGS acrescenta opções ao docker build, ex: --network host
 # numa máquina onde o DNS falhe dentro do build.
@@ -46,10 +40,9 @@ case ":$$PATH:" in *":$(BINDIR):"*) ;; \
      echo "     export PATH=\"$(BINDIR):\$$PATH\"" ;; esac
 endef
 
-.PHONY: help setup env doctor deps deps-stems build install install-docker uninstall \
-	fmt vet lint test test-race cover test-integration test-integration-docker \
-	test-integration-stems check docker-build stems-build up down restart logs ps dev \
-	update-ytdlp release-snapshot release clean
+.PHONY: help setup config doctor run deps deps-stems build install install-docker uninstall \
+	fmt vet lint test test-race cover test-integration test-integration-docker check \
+	docker-build update-ytdlp release-snapshot release clean
 
 ##@ Começar
 
@@ -58,11 +51,14 @@ help: ## Mostra esta ajuda
 		/^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-setup: ## Assistente pós-clone: .env, CLI, imagens, bot e diagnóstico
+setup: ## Assistente pós-clone: instala a CLI (nativa ou Docker) e configura-a
 	@BINDIR="$(BINDIR)" IMAGE="$(IMAGE)" scripts/setup.sh
 
-env: ## Cria ou atualiza o .env (pede o token sem o mostrar)
+config: ## Cria ou edita ~/.config/dotboot/config.env (pasta de saída, cookies)
 	@scripts/configure-env.sh
+
+run: ## Abre a TUI a partir do código (go run)
+	go run $(PKG)
 
 doctor: build ## Verifica dependências e configuração
 	@$(BIN_DIR)/$(BINARY) doctor
@@ -86,7 +82,7 @@ install: build ## Instala a CLI nativa em BINDIR (default ~/.local/bin)
 	@echo "✅ $$("$(BINDIR)/$(BINARY)" version)"
 	@$(path_hint)
 
-install-docker: ## Instala o wrapper que corre a CLI via Docker (DOCKER_CLI_NAME=dotboot)
+install-docker: ## Instala o wrapper que corre tudo via Docker (DOCKER_CLI_NAME=dotboot)
 	@mkdir -p "$(BINDIR)"
 	install -m 0755 scripts/dotboot-docker "$(BINDIR)/$(DOCKER_CLI_NAME)"
 	@echo "✅ $(BINDIR)/$(DOCKER_CLI_NAME) → imagem $(IMAGE) (constrói-a com: make docker-build)"
@@ -119,50 +115,25 @@ cover: ## Cobertura (coverage.out + total)
 	go test -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out | tail -1
 
-test-integration: ## Testes de integração no host (precisa de yt-dlp, ffmpeg e rede)
-	go test -tags integration -v -timeout 20m ./internal/downloader
+test-integration: ## Testes de integração no host (precisa de yt-dlp, ffmpeg, audio-separator e rede)
+	go test -tags integration -v -timeout 30m ./internal/downloader ./internal/stems
 
-test-integration-docker: docker-build ## Testes de integração dentro da imagem de produção (RUN=padrão)
+test-integration-docker: docker-build ## Testes de integração dentro da imagem (downloads reais e separação)
 	CGO_ENABLED=0 go test -c -tags integration -o $(BIN_DIR)/downloader.test ./internal/downloader
+	CGO_ENABLED=0 go test -c -tags integration -o $(BIN_DIR)/stems.test ./internal/stems
 	docker run --rm --entrypoint /tests/downloader.test \
 		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" $(IMAGE) \
 		-test.v -test.timeout 20m $(if $(RUN),-test.run '$(RUN)')
-
-test-integration-stems: stems-build ## Separação a sério dentro da imagem de stems (descarrega um modelo)
-	CGO_ENABLED=0 go test -c -tags integration -o $(BIN_DIR)/stems.test ./internal/stems
 	docker run --rm --entrypoint /tests/stems.test \
-		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" -v dotboot-models:/models $(STEMS_IMAGE) \
+		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" -v dotboot-models:/models $(IMAGE) \
 		-test.v -test.timeout 30m
 
 check: lint test-race ## lint + testes com -race (o mesmo que o CI)
 
-##@ Docker e bot
+##@ Docker
 
-docker-build: ## Constrói a imagem de produção (IMAGE=dotboot:latest)
-	$(DOCKER_BUILD) --target production -t $(IMAGE) .
-
-stems-build: ## Constrói a imagem de stems (STEMS_IMAGE=dotboot-stems:latest, ~3GB)
-	$(DOCKER_BUILD) --target stems -t $(STEMS_IMAGE) .
-
-up: .env ## Arranca ou atualiza o bot (reconstrói a imagem)
-	@scripts/configure-env.sh --check-token
-	$(COMPOSE) up -d --build videobot
-	@echo "✅ Bot a arrancar. Estado: make ps · Logs: make logs"
-
-down: ## Para o bot
-	$(COMPOSE) down
-
-restart: ## Reinicia o bot sem reconstruir
-	$(COMPOSE) restart videobot
-
-logs: ## Segue os logs do bot
-	$(COMPOSE) logs -f videobot
-
-ps: ## Estado do bot, incluindo o healthcheck
-	$(COMPOSE) ps
-
-dev: .env ## Bot com live reload (Air)
-	$(COMPOSE) --profile dev up --build videobot-dev
+docker-build: ## Constrói a imagem com tudo (IMAGE=dotboot:latest, ~3GB)
+	$(DOCKER_BUILD) --target app -t $(IMAGE) .
 
 update-ytdlp: ## Fixa a última versão do yt-dlp no Dockerfile e reconstrói a imagem
 	@tag="$$(curl -fsSI https://github.com/yt-dlp/yt-dlp/releases/latest | tr -d '\r' \
@@ -171,10 +142,6 @@ update-ytdlp: ## Fixa a última versão do yt-dlp no Dockerfile e reconstrói a 
 	sed -i.bak "s/^ARG YTDLP_VERSION=.*/ARG YTDLP_VERSION=$$tag/" Dockerfile && rm -f Dockerfile.bak; \
 	echo "yt-dlp fixado em $$tag no Dockerfile"
 	$(MAKE) docker-build
-	@echo "Para o bot usar a nova versão: make up"
-
-.env:
-	@scripts/configure-env.sh
 
 ##@ Releases
 
