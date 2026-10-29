@@ -109,6 +109,21 @@ gh auth setup-git
 GOPRIVATE=github.com/abneribeiro/* go install github.com/abneribeiro/dotboot/cmd/dotboot@latest
 ```
 
+### Criar o bot no Discord (uma vez)
+
+1. Em [discord.com/developers/applications](https://discord.com/developers/applications),
+   **New Application** → dá-lhe um nome.
+2. Separador **Bot** → **Reset Token** → copia o token. É este valor que o
+   `make env` (ou o `make setup`) te pede. Não precisas de ativar nenhum
+   *Privileged Gateway Intent*.
+3. Separador **OAuth2** → **URL Generator**: marca os scopes `bot` e
+   `applications.commands`, e as permissões **Send Messages** e
+   **Attach Files**. Abre o URL gerado e escolhe o servidor.
+4. Para o `/baixar` aparecer logo nesse servidor (sem esperar até 1 hora),
+   ativa o *Developer Mode* do Discord (Definições → Avançado), clica com o
+   botão direito no servidor → **Copiar ID do servidor** e põe-no em
+   `DOTBOOT_GUILD_ID` (o `make env` também o pergunta).
+
 ### O bot (Docker)
 
 ```bash
