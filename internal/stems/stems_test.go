@@ -1,6 +1,8 @@
 package stems
 
 import (
+	"context"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -39,60 +41,6 @@ func TestPresetsUsamNomesConhecidos(t *testing.T) {
 				t.Errorf("preset %s: pista %q sem tradução em stemNames", p.Name, s)
 			}
 		}
-	}
-}
-
-func TestSelect(t *testing.T) {
-	six, _ := LookupPreset("6s")
-	four, _ := LookupPreset("4s")
-
-	tests := []struct {
-		name     string
-		preset   Preset
-		only     []string
-		without  []string
-		wantKeep []string
-		wantMix  string
-		wantFrom []string
-		wantErr  bool
-	}{
-		{name: "por omissão guarda tudo", preset: six, wantKeep: six.Stems},
-		{name: "-so pela ordem do preset", preset: six, only: []string{"guitarra", "baixo"},
-			wantKeep: []string{"baixo", "guitarra"}},
-		{name: "-sem guitarra junta as outras", preset: six, without: []string{"guitarra"},
-			wantKeep: six.Stems, wantMix: "sem-guitarra",
-			wantFrom: []string{"vozes", "bateria", "baixo", "piano", "outros"}},
-		// O par para praticar: a guitarra sozinha e tudo menos ela.
-		{name: "-so e -sem juntos", preset: six, only: []string{"guitarra"}, without: []string{"guitarra"},
-			wantKeep: []string{"guitarra"}, wantMix: "sem-guitarra",
-			wantFrom: []string{"vozes", "bateria", "baixo", "piano", "outros"}},
-		{name: "-sem com duas pistas", preset: six, without: []string{"vozes", "guitarra"},
-			wantKeep: six.Stems, wantMix: "sem-vozes-guitarra",
-			wantFrom: []string{"bateria", "baixo", "piano", "outros"}},
-		{name: "pista que o modelo não tem", preset: four, without: []string{"guitarra"}, wantErr: true},
-		{name: "-so com pista desconhecida", preset: six, only: []string{"saxofone"}, wantErr: true},
-		{name: "-sem tudo não deixa nada", preset: four, without: four.Stems, wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sel, err := Select(tt.preset, tt.only, tt.without)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("Select err = %v, wantErr = %v", err, tt.wantErr)
-			}
-			if tt.wantErr {
-				return
-			}
-			if !slices.Equal(sel.Keep, tt.wantKeep) {
-				t.Errorf("Keep = %v, esperado %v", sel.Keep, tt.wantKeep)
-			}
-			if sel.MixName != tt.wantMix {
-				t.Errorf("MixName = %q, esperado %q", sel.MixName, tt.wantMix)
-			}
-			if !slices.Equal(sel.MixStems, tt.wantFrom) {
-				t.Errorf("MixStems = %v, esperado %v", sel.MixStems, tt.wantFrom)
-			}
-		})
 	}
 }
 
@@ -194,16 +142,101 @@ func TestEncodeArgsPorFormato(t *testing.T) {
 	}
 }
 
-// Sem normalize=0, o amix divide cada pista pelo número de entradas e a faixa
-// "sem guitarra" sairia muito mais baixa do que a música original.
-func TestMixArgsMantemOVolume(t *testing.T) {
-	got := MixArgs([]string{"/w/vozes.wav", "/w/baixo.wav", "/w/bateria.wav"}, "/out/sem-guitarra.mp3", "mp3", "t")
-
-	if n := strings.Count(strings.Join(got, " "), "-i "); n != 3 {
-		t.Errorf("esperava 3 entradas, há %d: %v", n, got)
+// Sem normalize=0, o amix divide cada pista pelo número de entradas e a
+// mistura sairia muito mais baixa do que a música original.
+func TestMixArgs(t *testing.T) {
+	tests := []struct {
+		name       string
+		tracks     []Track
+		wantInputs int
+		wantFilter string // -filter_complex
+		wantAF     string // -af
+	}{
+		{
+			name:       "volumes originais mantêm o volume da música",
+			tracks:     []Track{{"/w/vozes.wav", 1}, {"/w/baixo.wav", 1}, {"/w/bateria.wav", 1}},
+			wantInputs: 3,
+			wantFilter: "[0:a][1:a][2:a]amix=inputs=3:normalize=0",
+		},
+		{
+			name:       "o volume do estúdio entra na mistura",
+			tracks:     []Track{{"/w/baixo.wav", 0.5}, {"/w/bateria.wav", 1}},
+			wantInputs: 2,
+			wantFilter: "[0:a]volume=0.500[g0];[g0][1:a]amix=inputs=2:normalize=0",
+		},
+		{
+			name:       "uma pista sozinha não passa pelo amix",
+			tracks:     []Track{{"/w/baixo.wav", 1}},
+			wantInputs: 1,
+		},
+		{
+			name:       "uma pista com volume",
+			tracks:     []Track{{"/w/baixo.wav", 1.25}},
+			wantInputs: 1,
+			wantAF:     "volume=1.250",
+		},
 	}
-	if v := argValue(got, "-filter_complex"); v != "amix=inputs=3:normalize=0" {
-		t.Errorf("-filter_complex = %q", v)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MixArgs(tt.tracks, "/out/mix.wav", "wav", "t")
+			if n := strings.Count(strings.Join(got, " "), "-i "); n != tt.wantInputs {
+				t.Errorf("esperava %d entradas, há %d: %v", tt.wantInputs, n, got)
+			}
+			if v := argValue(got, "-filter_complex"); v != tt.wantFilter {
+				t.Errorf("-filter_complex = %q, quero %q", v, tt.wantFilter)
+			}
+			if v := argValue(got, "-af"); v != tt.wantAF {
+				t.Errorf("-af = %q, quero %q", v, tt.wantAF)
+			}
+			if v := argValue(got, "-c:a"); v != "pcm_s16le" {
+				t.Errorf("-c:a = %q, quero pcm_s16le para wav", v)
+			}
+		})
+	}
+}
+
+func TestRenderValida(t *testing.T) {
+	ctx := context.Background()
+	if err := Render(ctx, nil, "/out/x.wav", "wav", "t"); err == nil {
+		t.Error("Render sem pistas devia falhar")
+	}
+	if err := Render(ctx, []Track{{"/w/a.wav", 1}}, "/out/x.ogg", "ogg", "t"); err == nil {
+		t.Error("Render com um formato desconhecido devia falhar")
+	}
+}
+
+// pcm escreve amostras s16le.
+func pcm(samples ...int16) []byte {
+	out := make([]byte, 0, 2*len(samples))
+	for _, v := range samples {
+		out = binary.LittleEndian.AppendUint16(out, uint16(v))
+	}
+	return out
+}
+
+func TestComputePeaks(t *testing.T) {
+	tests := []struct {
+		name     string
+		pcm      []byte
+		n        int
+		want     []float64
+		duration float64
+	}{
+		{"pico por intervalo, com negativos", pcm(0, 16384, -32768, 100), 2, []float64{0.5, 1}, 0.5},
+		{"menos amostras do que pontos", pcm(8192, -8192), 10, []float64{0.25, 0.25}, 0.25},
+		{"silêncio", pcm(0, 0, 0, 0), 2, []float64{0, 0}, 0.5},
+		{"vazio", nil, 4, nil, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ComputePeaks(tt.pcm, 8, tt.n)
+			if !slices.Equal(got.Values, tt.want) {
+				t.Errorf("Values = %v, quero %v", got.Values, tt.want)
+			}
+			if got.Duration != tt.duration {
+				t.Errorf("Duration = %v, quero %v", got.Duration, tt.duration)
+			}
+		})
 	}
 }
 

@@ -4,7 +4,7 @@
 // "go test ./..." porque descarrega um modelo (~80MB) na primeira execução e
 // precisa de vários minutos de CPU:
 //
-//	make test-integration-stems   (dentro da imagem de stems)
+//	make test-integration-docker   (dentro da imagem)
 package stems
 
 import (
@@ -59,22 +59,39 @@ func TestSepararEExportar(t *testing.T) {
 		}
 	}
 
-	sel, err := Select(p, nil, []string{"vozes"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	files, err := Export(ctx, tracks, sel, filepath.Join(dir, "saida"), "mp3", "Teste")
+	files, err := Export(ctx, tracks, p.Stems, filepath.Join(dir, "sessao"), "flac", "Teste")
 	if err != nil {
 		t.Fatalf("Export falhou: %v", err)
 	}
-	// As 4 pistas mais a faixa sem vozes.
-	if len(files) != 5 {
-		t.Fatalf("Export criou %d ficheiros, esperado 5: %v", len(files), files)
+	if len(files) != len(p.Stems) {
+		t.Fatalf("Export criou %d ficheiros, esperado %d: %v", len(files), len(p.Stems), files)
 	}
-	for _, f := range files {
+
+	// A forma de onda de uma pista real: 8s e picos entre 0 e 1.
+	peaks, err := MeasurePeaks(ctx, files[0], 500)
+	if err != nil {
+		t.Fatalf("MeasurePeaks falhou: %v", err)
+	}
+	if peaks.Duration < 7.9 || peaks.Duration > 8.1 || len(peaks.Values) != 500 {
+		t.Errorf("peaks = %.2fs com %d pontos, esperado 8s com 500", peaks.Duration, len(peaks.Values))
+	}
+
+	// O estúdio: baixo + bateria numa só faixa, com o baixo a meio volume,
+	// e uma pista sozinha em MP3.
+	mix := filepath.Join(dir, "baixo-bateria.wav")
+	err = Render(ctx, []Track{{files[2], 0.5}, {files[1], 1}}, mix, "wav", "Teste (baixo + bateria)")
+	if err != nil {
+		t.Fatalf("Render da mistura falhou: %v", err)
+	}
+	single := filepath.Join(dir, "vozes.mp3")
+	if err := Render(ctx, []Track{{files[0], 1}}, single, "mp3", "Teste (vozes)"); err != nil {
+		t.Fatalf("Render de uma pista falhou: %v", err)
+	}
+	for _, f := range append(files, mix, single) {
 		info, err := os.Stat(f)
 		if err != nil || info.Size() == 0 {
 			t.Errorf("%s vazio ou inexistente (%v)", f, err)
+			continue
 		}
 		t.Logf("%s (%d bytes)", filepath.Base(f), info.Size())
 	}
