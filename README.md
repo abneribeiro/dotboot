@@ -79,8 +79,11 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # ou ~/.bashrc
 **Via Docker**, o `dotboot` é um pequeno script (`scripts/dotboot-docker`) que
 corre a imagem `dotboot:latest` com o teu utilizador e a tua home montada no
 mesmo caminho: os ficheiros ficam teus, e `~`, caminhos absolutos e as
-definições funcionam como na versão nativa. Os modelos dos stems ficam no
-volume Docker `dotboot-models`, para só se descarregarem uma vez.
+definições funcionam como na versão nativa. Também monta a pasta de saída e a
+dos cookies das Definições e, no WSL, os discos do Windows (`/mnt/c`…). Uma
+pasta fora destas, escolhida depois de abrir o dotboot, só fica acessível
+depois de o fechar e voltar a abrir. Os modelos dos stems ficam no volume
+Docker `dotboot-models`, para só se descarregarem uma vez.
 
 **Outras formas** (só a CLI nativa; as dependências instalam-se à parte com o
 `scripts/install-deps.sh` que vem no archive):

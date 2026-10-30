@@ -56,15 +56,52 @@ mount_same "$PWD"
 for var in DOTBOOT_OUTPUT_DIR DOTBOOT_COOKIES_FILE DOTBOOT_LOG_LEVEL DOTBOOT_JS_RUNTIMES; do
 	if [ -n "${!var:-}" ]; then
 		docker_args+=(-e "$var=${!var}")
-		case "$var" in
-		DOTBOOT_OUTPUT_DIR)
-			mkdir -p "${!var}"
-			mount_same "$(cd "${!var}" && pwd)"
-			;;
-		DOTBOOT_COOKIES_FILE) mount_same "$(cd "$(dirname "${!var}")" && pwd)" ;;
-		esac
 	fi
 done
+
+# config_value lê KEY de um ficheiro .env (a última linha ganha), sem aspas.
+config_value() {
+	local key=$1 file=$2 line value=""
+	[ -r "$file" ] || return 0
+	while IFS= read -r line || [ -n "$line" ]; do
+		case "$line" in "$key="*) value=${line#*=} ;; esac
+	done <"$file"
+	case "$value" in \"*\") value=${value:1:-1} value=${value//\\\"/\"} value=${value//\\\\/\\} ;; esac
+	# shellcheck disable=SC2088 # o ~ é literal: expande-se aqui à mão
+	case "$value" in "~" | "~/"*) value=$HOME${value:1} ;; esac
+	printf '%s' "$value"
+}
+
+# setting devolve uma definição com a prioridade do dotboot: ambiente,
+# ./.env e por fim ~/.config/dotboot/config.env.
+config_file=${XDG_CONFIG_HOME:-$HOME/.config}/dotboot/config.env
+setting() {
+	local key=$1 value=${!1:-}
+	[ -n "$value" ] || value=$(config_value "$key" .env)
+	[ -n "$value" ] || value=$(config_value "$key" "$config_file")
+	printf '%s' "$value"
+}
+
+# A pasta de saída e a dos cookies, venham de onde vierem, têm de estar
+# montadas: sem isto, a pasta gravada nas Definições não existia no container.
+output=$(setting DOTBOOT_OUTPUT_DIR)
+if [ -n "$output" ] && mkdir -p "$output" 2>/dev/null; then
+	mount_same "$(cd "$output" && pwd)"
+fi
+cookies=$(setting DOTBOOT_COOKIES_FILE)
+if [ -n "$cookies" ] && [ -e "$cookies" ]; then
+	mount_same "$(cd "$(dirname "$cookies")" && pwd)"
+fi
+
+# No WSL, os discos do Windows (/mnt/c, /mnt/d…): uma pasta escrita na TUI
+# depois de o container arrancar já não pode ser montada.
+if grep -qi microsoft /proc/version 2>/dev/null; then
+	for drive in /mnt/[a-z]; do
+		if [ -d "$drive" ]; then
+			mount_same "$drive"
+		fi
+	done
+fi
 
 # Caminhos absolutos nos argumentos (-o, -a, -cookies, ficheiros de música).
 prev=""

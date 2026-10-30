@@ -279,3 +279,50 @@ func TestFormatBytesEETA(t *testing.T) {
 		}
 	}
 }
+
+func TestPrepareOutputDir(t *testing.T) {
+	tmp := t.TempDir()
+	readOnly := filepath.Join(tmp, "so-leitura")
+	if err := os.Mkdir(readOnly, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(tmp, "ficheiro")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		dir     string
+		wantErr bool
+		hint    bool
+	}{
+		{"cria a pasta", filepath.Join(tmp, "nova", "sub"), false, false},
+		{"pasta que já existe", tmp, false, false},
+		{"pasta só de leitura falha logo", readOnly, true, true},
+		{"um ficheiro no caminho", filepath.Join(file, "sub"), true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.wantErr && tt.dir == readOnly && os.Geteuid() == 0 {
+				t.Skip("o root escreve em pastas só de leitura")
+			}
+			t.Setenv("DOTBOOT_DOCKER", "1")
+			err := PrepareOutputDir(tt.dir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("PrepareOutputDir(%q) = %v, wantErr %v", tt.dir, err, tt.wantErr)
+			}
+			if err != nil && strings.Contains(err.Error(), "no Docker") != tt.hint {
+				t.Errorf("dica do Docker = %v, quero %v: %v", !tt.hint, tt.hint, err)
+			}
+			if err == nil {
+				entries, _ := os.ReadDir(tt.dir)
+				for _, e := range entries {
+					if strings.HasPrefix(e.Name(), ".dotboot-teste-") {
+						t.Errorf("ficou o ficheiro de teste %s", e.Name())
+					}
+				}
+			}
+		})
+	}
+}

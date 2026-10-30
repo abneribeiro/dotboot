@@ -125,8 +125,8 @@ func (s *Stems) Run(ctx context.Context, env Env, report Reporter) (Result, erro
 			return res, fmt.Errorf("yt-dlp não encontrado no PATH (precisa dele para URLs): %w", err)
 		}
 	}
-	if err := os.MkdirAll(s.OutputDir, 0o755); err != nil {
-		return res, fmt.Errorf("não foi possível criar a pasta %s: %w", s.OutputDir, err)
+	if err := PrepareOutputDir(s.OutputDir); err != nil {
+		return res, err
 	}
 
 	var errs []error
