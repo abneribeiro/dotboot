@@ -20,16 +20,16 @@
 		"@sveltejs/kit": "^3.0.0",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
 		"@tailwindcss/vite": "^4.3.0",
-		"@types/node": "^24.19.2",
+		"@types/node": "^26.6.5",
 		"prettier": "^3.8.3",
 		"prettier-plugin-svelte": "^4.1.0",
 		"prettier-plugin-tailwindcss": "^0.8.0",
 		"svelte": "^5.57.1",
 		"svelte-check": "^4.6.0",
 		"tailwindcss": "^4.3.0",
-		"typescript": "^6.0.3",
+		"typescript": "^7.0.2",
 		"vite": "^8.3.0",
-		"vitest": "^4.1.8"
+		"vitest": "^5.0.5"
 	},
 	"imports": {
 		"#lib": "./src/lib/index.js",
