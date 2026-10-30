@@ -21,7 +21,18 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # ============================================================
-# Builder stage: binário estático
+# Web stage: a página (SvelteKit + Tailwind), compilada para estático
+# ============================================================
+FROM node:24-slim AS web
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# ============================================================
+# Builder stage: binário estático, com a página embutida
 # ============================================================
 FROM base AS builder
 
@@ -34,6 +45,7 @@ ARG DATE=
 # compatível com qualquer imagem Linux.
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+COPY --from=web /web/build ./internal/web/dist/app
 RUN CGO_ENABLED=0 go build -trimpath \
         -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
         -o /dotboot ./cmd/dotboot
@@ -108,10 +120,10 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
         "audioread==${AUDIOREAD_VERSION}"
 
 # ============================================================
-# App stage: a imagem final (TUI, download e stems)
+# App stage: a imagem final (servidor web, downloads e stems)
 # ============================================================
 # ~3GB, sobretudo o PyTorch: é o preço da separação de stems, e uma só
-# imagem deixa a TUI fazer tudo pelo wrapper sem instalar nada no host.
+# imagem faz tudo sem instalar nada no host.
 FROM python:3.12-slim-trixie AS app
 
 RUN apt-get update && \
@@ -126,16 +138,21 @@ COPY --from=tools /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
 COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=builder /dotboot /dotboot
 
-# /models com 1777: o wrapper corre o container com o uid de quem o chama, e
-# um volume novo herda as permissões deste diretório.
+# /data (separações, downloads, uploads) e /models (os modelos dos stems)
+# são volumes. Com 1777, um volume novo herda permissões que deixam escrever
+# qualquer uid — também volumes criados por versões antigas do wrapper, que
+# corriam com o uid de quem o chamava.
 RUN useradd --system --uid 10001 --create-home --home-dir /home/dotboot dotboot && \
-    install -d -m 1777 /models
-# DOTBOOT_DOCKER: os erros de pasta explicam o que o wrapper monta.
-ENV DOTBOOT_MODELS_DIR=/models DOTBOOT_DOCKER=1
-VOLUME /models
+    install -d -m 1777 /models /data
+ENV DOTBOOT_MODELS_DIR=/models DOTBOOT_DATA_DIR=/data
+VOLUME /models /data
 
 USER dotboot
 WORKDIR /home/dotboot
 
-# Sem argumentos abre a TUI (com -it); ex: docker run --rm -it dotboot:latest
-ENTRYPOINT ["/dotboot"]
+# Dentro do container escuta em todas as interfaces; o wrapper publica a
+# porta só em 127.0.0.1 do host. O browser abre-o o wrapper, no host.
+EXPOSE 8765
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+    CMD ["/dotboot", "health", "-addr", "127.0.0.1:8765"]
+ENTRYPOINT ["/dotboot", "-addr", "0.0.0.0:8765", "-no-browser"]

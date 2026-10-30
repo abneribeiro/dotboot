@@ -3,8 +3,8 @@
 #   make              mostra os targets
 #   make setup        configura tudo depois do clone (assistente)
 #
-# Variáveis úteis: PREFIX/BINDIR (onde instalar a CLI), IMAGE, VERSION (por
-# omissão, o git describe).
+# Variáveis úteis: PREFIX/BINDIR (onde instalar o comando), IMAGE, VERSION
+# (por omissão, o git describe), ADDR (onde o servidor escuta no make run).
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -17,6 +17,13 @@ BIN_DIR         := bin
 PREFIX          ?= $(HOME)/.local
 BINDIR          ?= $(PREFIX)/bin
 DOCKER_CLI_NAME ?= dotboot
+ADDR            ?= 127.0.0.1:8765
+
+# A página (SvelteKit) compila para web/build e é copiada para dentro do
+# pacote internal/web, que a embute no binário.
+WEB_DIR  := web
+WEB_DIST := internal/web/dist/app
+NPM      ?= npm
 
 IMAGE ?= dotboot:latest
 
@@ -40,8 +47,8 @@ case ":$$PATH:" in *":$(BINDIR):"*) ;; \
      echo "     export PATH=\"$(BINDIR):\$$PATH\"" ;; esac
 endef
 
-.PHONY: help setup config doctor run deps deps-stems build install install-docker uninstall \
-	fmt vet lint test test-race cover test-integration test-integration-docker check \
+.PHONY: help setup run web web-deps web-dev web-check deps deps-stems build install install-docker \
+	uninstall fmt vet lint test test-race cover test-integration test-integration-docker check \
 	docker-build update-ytdlp release-snapshot release clean
 
 ##@ Começar
@@ -51,19 +58,30 @@ help: ## Mostra esta ajuda
 		/^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-setup: ## Assistente pós-clone: instala a CLI (nativa ou Docker) e configura-a
+setup: ## Assistente pós-clone: instala o dotboot (Docker ou nativo)
 	@BINDIR="$(BINDIR)" IMAGE="$(IMAGE)" scripts/setup.sh
 
-config: ## Cria ou edita ~/.config/dotboot/config.env (pasta de saída, cookies)
-	@scripts/configure-env.sh
+run: web ## Compila a página e arranca o servidor a partir do código
+	go run $(PKG) -addr $(ADDR)
 
-run: ## Abre a TUI a partir do código (go run)
-	go run $(PKG)
+##@ Página (SvelteKit)
 
-doctor: build ## Verifica dependências e configuração
-	@$(BIN_DIR)/$(BINARY) doctor
+web-deps: ## Instala as dependências do frontend (npm ci)
+	cd $(WEB_DIR) && $(NPM) ci
 
-##@ CLI no host
+web: web-deps ## Compila a página e copia-a para o binário (internal/web/dist/app)
+	cd $(WEB_DIR) && $(NPM) run build
+	rm -rf $(WEB_DIST)
+	cp -r $(WEB_DIR)/build $(WEB_DIST)
+
+web-dev: ## Desenvolvimento: Vite com hot reload (:5173) e o servidor Go na :8765
+	@trap 'kill 0' EXIT; go run $(PKG) -addr 127.0.0.1:8765 -no-browser & \
+		cd $(WEB_DIR) && $(NPM) run dev -- --open
+
+web-check: web-deps ## svelte-check, prettier e vitest
+	cd $(WEB_DIR) && $(NPM) run check && $(NPM) run lint && $(NPM) test
+
+##@ Instalação no host
 
 deps: ## Instala yt-dlp e deno em BINDIR, e o ffmpeg pelo gestor de pacotes
 	@BINDIR="$(BINDIR)" scripts/install-deps.sh
@@ -71,13 +89,13 @@ deps: ## Instala yt-dlp e deno em BINDIR, e o ffmpeg pelo gestor de pacotes
 deps-stems: ## Instala o audio-separator (separação de stems) com o uv
 	@BINDIR="$(BINDIR)" scripts/install-deps.sh --stems
 
-build: ## Compila bin/dotboot com a versão embutida
+build: web ## Compila bin/dotboot (com a página) e a versão embutida
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(PKG)
 
-install: build ## Instala a CLI nativa em BINDIR (default ~/.local/bin)
+install: build ## Instala o binário nativo em BINDIR (default ~/.local/bin)
 	@mkdir -p "$(BINDIR)"
 	@if [ -f "$(BINDIR)/$(BINARY)" ] && [ "$$(head -c 2 "$(BINDIR)/$(BINARY)")" = "#!" ]; then \
-		echo "ℹ️  $(BINDIR)/$(BINARY) era o wrapper Docker e passa a ser a CLI nativa."; fi
+		echo "ℹ️  $(BINDIR)/$(BINARY) era o wrapper Docker e passa a ser o binário nativo."; fi
 	install -m 0755 $(BIN_DIR)/$(BINARY) "$(BINDIR)/$(BINARY)"
 	@echo "✅ $$("$(BINDIR)/$(BINARY)" version)"
 	@$(path_hint)
@@ -88,7 +106,7 @@ install-docker: ## Instala o wrapper que corre tudo via Docker (DOCKER_CLI_NAME=
 	@echo "✅ $(BINDIR)/$(DOCKER_CLI_NAME) → imagem $(IMAGE) (constrói-a com: make docker-build)"
 	@$(path_hint)
 
-uninstall: ## Remove a CLI de BINDIR
+uninstall: ## Remove o dotboot de BINDIR
 	rm -f "$(BINDIR)/$(BINARY)"
 
 ##@ Qualidade
@@ -128,7 +146,7 @@ test-integration-docker: docker-build ## Testes de integração dentro da imagem
 		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" -v dotboot-models:/models $(IMAGE) \
 		-test.v -test.timeout 30m
 
-check: lint test-race ## lint + testes com -race (o mesmo que o CI)
+check: lint test-race web-check ## lint + testes com -race + frontend (o mesmo que o CI)
 
 ##@ Docker
 
@@ -145,7 +163,7 @@ update-ytdlp: ## Fixa a última versão do yt-dlp no Dockerfile e reconstrói a 
 
 ##@ Releases
 
-release-snapshot: ## Binários de todas as plataformas em dist/, sem publicar
+release-snapshot: web ## Binários de todas as plataformas em dist/, sem publicar
 	docker run --rm --user "$$(id -u):$$(id -g)" \
 		-e HOME=/tmp -e GOCACHE=/tmp/go-build -e GOMODCACHE=/gomod \
 		-v "$$(go env GOMODCACHE):/gomod" -v "$(CURDIR):/src" -w /src \
@@ -158,5 +176,5 @@ release: ## Cria e envia a tag VERSION=vX.Y.Z (o GitHub Actions publica a releas
 	git tag -a $(VERSION) -m "dotboot $(VERSION)"
 	git push origin $(VERSION)
 
-clean: ## Remove bin/, dist/ e a cobertura
-	rm -rf $(BIN_DIR) dist coverage.out
+clean: ## Remove bin/, dist/, a cobertura e o build da página
+	rm -rf $(BIN_DIR) dist coverage.out $(WEB_DIR)/build $(WEB_DIST)

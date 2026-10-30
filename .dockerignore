@@ -35,7 +35,6 @@ Thumbs.db
 
 # Docker files (to avoid recursive copying)
 Dockerfile*
-docker-compose*.yml
 
 # Go build artifacts
 vendor/
@@ -50,3 +49,9 @@ scripts/
 .github/
 Makefile
 .goreleaser.yaml
+
+# Frontend: as dependências e o build fazem-se dentro da imagem (estágio web)
+web/node_modules/
+web/build/
+web/.svelte-kit/
+internal/web/dist/app/
