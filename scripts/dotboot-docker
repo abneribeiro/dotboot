@@ -1,171 +1,124 @@
 #!/usr/bin/env bash
-# dotboot (via Docker) — corre o servidor do dotboot num container, sem
-# yt-dlp, ffmpeg, deno nem audio-separator no host, e abre a página no
-# browser. `make install-docker` instala-o no PATH com o nome "dotboot".
+# dotboot (via Docker) — corre o dotboot dentro de um container, sem yt-dlp,
+# ffmpeg, deno nem audio-separator no host. `make install-docker` instala-o
+# no PATH com o nome "dotboot".
 #
-#   dotboot            arranca e abre a página; ctrl+c para (cancela os trabalhos)
-#   dotboot up         arranca em segundo plano (volta a arrancar com o Docker)
-#   dotboot down       para o que está em segundo plano
-#   dotboot open       abre a página no browser
-#   dotboot logs [-f]  mostra o log
-#   dotboot status     diz se está a correr
-#   dotboot version    mostra a versão da imagem
+#   dotboot                         abre a TUI
+#   dotboot <url>                   igual a "dotboot download <url>"
+#   dotboot download -o aulas <url>
+#   dotboot stems ~/Musica/song.mp3
 #
-# A página só é acessível a partir deste computador (127.0.0.1). As
-# separações e os downloads ficam no volume "dotboot-data" e chegam-te pelo
-# browser quando os descarregas; os modelos dos stems ficam no volume
-# "dotboot-models", para só se descarregarem uma vez.
+# O container corre com o teu utilizador e com a tua home montada no mesmo
+# caminho: o ~, os caminhos absolutos, o ~/.config/dotboot e o seletor de
+# ficheiros da TUI funcionam como na instalação nativa. Os modelos dos stems
+# ficam no volume "dotboot-models".
 #
-# Variáveis: DOTBOOT_IMAGE (default dotboot:latest), DOTBOOT_PORT (8765),
-# DOTBOOT_COOKIES_FILE (um cookies.txt do host), DOTBOOT_LOG_LEVEL,
-# DOTBOOT_JS_RUNTIMES e DOTBOOT_NO_BROWSER=1 (não abre o browser).
+# Variáveis: DOTBOOT_IMAGE (default dotboot:latest) e as DOTBOOT_* do dotboot.
 set -euo pipefail
 
 image=${DOTBOOT_IMAGE:-dotboot:latest}
-port=${DOTBOOT_PORT:-8765}
-name=dotboot
-url="http://localhost:$port"
 
-usage() {
-	sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'
+# Aceita "dotboot <url>" como atalho de "dotboot download <url>".
+case "${1:-}" in
+"" | tui | download | stems | doctor | version | help | -h | --help | -v | --version) ;;
+*) set -- download "$@" ;;
+esac
+
+docker_args=(run --rm -i --init
+	--user "$(id -u):$(id -g)"
+	-e HOME="$HOME"
+	-v "$HOME:$HOME"
+	-v dotboot-models:/models
+	-w "$PWD")
+
+# A TUI precisa de um terminal; as cores, de saber qual é.
+if [ -t 0 ] && [ -t 1 ]; then
+	docker_args+=(-t -e TERM="${TERM:-xterm-256color}")
+	if [ -n "${COLORTERM:-}" ]; then
+		docker_args+=(-e COLORTERM="$COLORTERM")
+	fi
+fi
+
+# mount_same monta um caminho do host no mesmo sítio dentro do container,
+# a não ser que já esteja dentro da home (que já está montada).
+mounted=$'\n'
+mount_same() {
+	local path=$1
+	case "$path" in "$HOME" | "$HOME"/*) return ;; esac
+	case "$mounted" in *$'\n'"$path"$'\n'*) return ;; esac
+	docker_args+=(-v "$path:$path")
+	mounted+="$path"$'\n'
 }
 
-running() {
-	[ -n "$(docker ps -q --filter "name=^${name}\$")" ]
-}
+mount_same "$PWD"
 
-# open_browser espera que o servidor responda e abre a página. No WSL o
-# browser é o do Windows.
-open_browser() {
-	if [ "${DOTBOOT_NO_BROWSER:-}" = 1 ]; then
-		return
-	fi
-	for _ in $(seq 1 60); do
-		if curl -fsS -o /dev/null "$url/api/info" 2>/dev/null; then
-			break
-		fi
-		sleep 0.5
-	done
-	if command -v wslview >/dev/null 2>&1; then
-		wslview "$url" >/dev/null 2>&1 && return
-	fi
-	if grep -qi microsoft /proc/version 2>/dev/null && command -v explorer.exe >/dev/null 2>&1; then
-		# O explorer.exe devolve 1 mesmo quando abre.
-		explorer.exe "$url" >/dev/null 2>&1 || true
-		return
-	fi
-	for opener in xdg-open open; do
-		if command -v "$opener" >/dev/null 2>&1; then
-			"$opener" "$url" >/dev/null 2>&1 && return
-		fi
-	done
-	echo "Abre $url no browser."
-}
-
-run_args=(--name "$name" --init
-	-p "127.0.0.1:$port:8765"
-	-v dotboot-data:/data
-	-v dotboot-models:/models)
-
-for var in DOTBOOT_LOG_LEVEL DOTBOOT_JS_RUNTIMES; do
+# As variáveis do dotboot definidas no host valem também lá dentro.
+for var in DOTBOOT_OUTPUT_DIR DOTBOOT_COOKIES_FILE DOTBOOT_LOG_LEVEL DOTBOOT_JS_RUNTIMES; do
 	if [ -n "${!var:-}" ]; then
-		run_args+=(-e "$var=${!var}")
+		docker_args+=(-e "$var=${!var}")
 	fi
 done
-# Um cookies.txt do host entra só de leitura; também se pode enviar um pela
-# página (Definições), que fica no volume.
-if [ -n "${DOTBOOT_COOKIES_FILE:-}" ]; then
-	if [ ! -f "$DOTBOOT_COOKIES_FILE" ]; then
-		echo "DOTBOOT_COOKIES_FILE não existe: $DOTBOOT_COOKIES_FILE" >&2
-		exit 1
-	fi
-	run_args+=(-v "$(cd "$(dirname "$DOTBOOT_COOKIES_FILE")" && pwd)/$(basename "$DOTBOOT_COOKIES_FILE"):/config/cookies.txt:ro"
-		-e DOTBOOT_COOKIES_FILE=/config/cookies.txt)
-fi
 
-# Um container parado com o mesmo nome (de um `up` anterior, ou de um
-# crash) impedia o arranque.
-remove_stopped() {
-	if [ -n "$(docker ps -aq --filter "name=^${name}\$" --filter status=exited --filter status=created)" ]; then
-		docker rm "$name" >/dev/null
-	fi
+# config_value lê KEY de um ficheiro .env (a última linha ganha), sem aspas.
+config_value() {
+	local key=$1 file=$2 line value=""
+	[ -r "$file" ] || return 0
+	while IFS= read -r line || [ -n "$line" ]; do
+		case "$line" in "$key="*) value=${line#*=} ;; esac
+	done <"$file"
+	case "$value" in \"*\") value=${value:1:-1} value=${value//\\\"/\"} value=${value//\\\\/\\} ;; esac
+	# shellcheck disable=SC2088 # o ~ é literal: expande-se aqui à mão
+	case "$value" in "~" | "~/"*) value=$HOME${value:1} ;; esac
+	printf '%s' "$value"
 }
 
-# port_taken diz se outra aplicação (não o dotboot) já usa a porta: o docker
-# só falhava com um "port is already allocated" pouco claro.
-port_taken() {
-	! running && curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/" 2>/dev/null
+# setting devolve uma definição com a prioridade do dotboot: ambiente,
+# ./.env e por fim ~/.config/dotboot/config.env.
+config_file=${XDG_CONFIG_HOME:-$HOME/.config}/dotboot/config.env
+setting() {
+	local key=$1 value=${!1:-}
+	[ -n "$value" ] || value=$(config_value "$key" .env)
+	[ -n "$value" ] || value=$(config_value "$key" "$config_file")
+	printf '%s' "$value"
 }
 
-if [ -z "${1:-}" ] || [ "$1" = up ]; then
-	if port_taken; then
-		echo "A porta $port já está ocupada por outra aplicação. Usa outra, ex: DOTBOOT_PORT=8790 dotboot" >&2
-		exit 1
-	fi
+# A pasta de saída e a dos cookies, venham de onde vierem, têm de estar
+# montadas: sem isto, a pasta gravada nas Definições não existia no container.
+output=$(setting DOTBOOT_OUTPUT_DIR)
+if [ -n "$output" ] && mkdir -p "$output" 2>/dev/null; then
+	mount_same "$(cd "$output" && pwd)"
+fi
+cookies=$(setting DOTBOOT_COOKIES_FILE)
+if [ -n "$cookies" ] && [ -e "$cookies" ]; then
+	mount_same "$(cd "$(dirname "$cookies")" && pwd)"
 fi
 
-case "${1:-}" in
-"")
-	if running; then
-		echo "O dotboot já está a correr em $url"
-		open_browser
-		exit 0
-	fi
-	remove_stopped
-	echo "dotboot em $url (ctrl+c para parar)"
-	open_browser &
-	tty_args=()
-	if [ -t 0 ] && [ -t 1 ]; then
-		tty_args=(-it)
-	fi
-	exec docker run --rm "${tty_args[@]}" "${run_args[@]}" "$image"
-	;;
-up)
-	if running; then
-		echo "O dotboot já está a correr em $url"
-		exit 0
-	fi
-	remove_stopped
-	docker run -d --restart unless-stopped "${run_args[@]}" "$image" >/dev/null
-	echo "dotboot a correr em segundo plano em $url (para com: dotboot down)"
-	open_browser
-	;;
-down | stop)
-	if ! running; then
-		echo "O dotboot não está a correr."
-		remove_stopped
-		exit 0
-	fi
-	# 30s: os trabalhos em curso são cancelados e o servidor espera pelo
-	# yt-dlp, o ffmpeg e o audio-separator antes de sair.
-	docker stop -t 30 "$name" >/dev/null
-	remove_stopped
-	echo "dotboot parado."
-	;;
-open)
-	DOTBOOT_NO_BROWSER=0 open_browser
-	;;
-logs)
-	shift
-	exec docker logs "$@" "$name"
-	;;
-status)
-	if running; then
-		echo "A correr em $url"
-	else
-		echo "Parado."
-		exit 1
-	fi
-	;;
-version | -v | --version)
-	exec docker run --rm "$image" version
-	;;
-help | -h | --help)
-	usage
-	;;
-*)
-	echo "comando desconhecido: $1" >&2
-	usage >&2
-	exit 2
-	;;
-esac
+# No WSL, os discos do Windows (/mnt/c, /mnt/d…): uma pasta escrita na TUI
+# depois de o container arrancar já não pode ser montada.
+if grep -qi microsoft /proc/version 2>/dev/null; then
+	for drive in /mnt/[a-z]; do
+		if [ -d "$drive" ]; then
+			mount_same "$drive"
+		fi
+	done
+fi
+
+# Caminhos absolutos nos argumentos (-o, -a, -cookies, ficheiros de música).
+prev=""
+for arg in "$@"; do
+	value=$arg
+	case "$arg" in -o=* | -a=* | -cookies=*) value=${arg#*=} ;; esac
+	case "$value" in
+	/*)
+		if [ "$prev" = "-o" ] || [ "${arg%%=*}" = "-o" ]; then
+			mkdir -p "$value"
+			mount_same "$value"
+		elif [ -e "$value" ]; then
+			mount_same "$(dirname "$value")"
+		fi
+		;;
+	esac
+	prev=$arg
+done
+
+exec docker "${docker_args[@]}" "$image" "$@"

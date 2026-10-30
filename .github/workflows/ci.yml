@@ -16,24 +16,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Página (svelte-check, prettier, vitest)
-        working-directory: web
-        run: |
-          npm ci
-          npm run check
-          npm run lint
-          npm test
-
-      # O binário embute a página: os testes e a compilação cruzada correm
-      # com ela lá dentro, como na release.
-      - name: Build da página
-        run: make web
 
       - name: gofmt
         run: |

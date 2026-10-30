@@ -1,15 +1,12 @@
 // Package stems separa uma música nas suas pistas (vozes, bateria, baixo,
-// guitarra, piano…) com o audio-separator, e mistura, converte e mede o
-// resultado com o ffmpeg. Não conhece a interface web.
+// guitarra, piano…) com o audio-separator, e mistura ou converte o resultado
+// com o ffmpeg. Não conhece a interface: o CLI e a TUI usam-no tal como está.
 package stems
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,24 +19,21 @@ import (
 	"github.com/abneribeiro/dotboot/internal/procio"
 )
 
-// Preset associa um nome curto a um modelo do audio-separator e às pistas
-// que ele produz.
+// Preset associa um nome curto (o -modelo do CLI) a um modelo do
+// audio-separator e às pistas que ele produz.
 type Preset struct {
-	// Name é o identificador usado pela API e pela página.
+	// Name é o valor de -modelo.
 	Name string
 	// Model é o ficheiro do modelo no catálogo do audio-separator.
 	Model string
 	// Stems são as pistas produzidas, já em português e pela ordem em que
 	// são apresentadas e guardadas.
 	Stems []string
-	// Description resume o preset para a página.
+	// Description resume o preset para a ajuda.
 	Description string
-	// Speed é o tempo de separação no CPU em múltiplos da duração da música
-	// (medido num portátil), para a página estimar a espera.
-	Speed float64
 }
 
-// DefaultPreset é o modelo por omissão: o único que separa a guitarra.
+// DefaultPreset é o -modelo por omissão: o único que separa a guitarra.
 const DefaultPreset = "6s"
 
 var presets = []Preset{
@@ -48,7 +42,6 @@ var presets = []Preset{
 		Model:       "htdemucs_6s.yaml",
 		Stems:       []string{"vozes", "bateria", "baixo", "guitarra", "piano", "outros"},
 		Description: "vozes, bateria, baixo, guitarra, piano e outros",
-		Speed:       1.2,
 	},
 	{
 		// O htdemucs_ft afina um modelo por pista: mais limpo do que o 6s,
@@ -57,7 +50,6 @@ var presets = []Preset{
 		Model:       "htdemucs_ft.yaml",
 		Stems:       []string{"vozes", "bateria", "baixo", "outros"},
 		Description: "vozes, bateria, baixo e outros (mais limpo, sem guitarra)",
-		Speed:       5.3,
 	},
 	{
 		// O MDX-Net (Kim Vocal 2) isola bem a voz e corre depressa no CPU,
@@ -67,7 +59,6 @@ var presets = []Preset{
 		Model:       "Kim_Vocal_2.onnx",
 		Stems:       []string{"vozes", "instrumental"},
 		Description: "vozes e instrumental, para karaoke (rápido)",
-		Speed:       1.4,
 	},
 	{
 		// O BS-RoFormer é o melhor a isolar a voz, mas é um transformer
@@ -76,11 +67,10 @@ var presets = []Preset{
 		Model:       "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
 		Stems:       []string{"vozes", "instrumental"},
 		Description: "vozes e instrumental na melhor qualidade (muito lento no CPU)",
-		Speed:       23,
 	},
 }
 
-// Presets devolve os presets disponíveis, pela ordem da página.
+// Presets devolve os presets disponíveis, pela ordem da ajuda.
 func Presets() []Preset {
 	return slices.Clone(presets)
 }
@@ -113,6 +103,53 @@ var stemNames = map[string]string{
 // Formats são os formatos de saída aceites.
 var Formats = []string{"mp3", "flac", "wav"}
 
+// Selection é o que se guarda depois de separar.
+type Selection struct {
+	// Keep são as pistas a guardar, pela ordem do preset.
+	Keep []string
+	// MixName e MixStems descrevem a faixa "sem X" (vazios sem -sem): o nome
+	// do ficheiro e as pistas que a compõem.
+	MixName  string
+	MixStems []string
+}
+
+// Select decide o que guardar: only (-so) restringe as pistas guardadas, e
+// without (-sem) acrescenta a mistura de todas as outras — a faixa para tocar
+// por cima. Recusa pistas que o preset não produz: "-sem guitarra" com o
+// modelo de 4 pistas não teria nada para tirar.
+func Select(p Preset, only, without []string) (Selection, error) {
+	for _, name := range append(slices.Clone(only), without...) {
+		if !slices.Contains(p.Stems, name) {
+			return Selection{}, fmt.Errorf("o modelo %s não tem a pista %q (tem: %s)",
+				p.Name, name, strings.Join(p.Stems, ", "))
+		}
+	}
+
+	var sel Selection
+	for _, s := range p.Stems {
+		if len(only) == 0 || slices.Contains(only, s) {
+			sel.Keep = append(sel.Keep, s)
+		}
+	}
+
+	if len(without) == 0 {
+		return sel, nil
+	}
+	var removed []string
+	for _, s := range p.Stems {
+		if slices.Contains(without, s) {
+			removed = append(removed, s)
+		} else {
+			sel.MixStems = append(sel.MixStems, s)
+		}
+	}
+	if len(sel.MixStems) == 0 {
+		return Selection{}, fmt.Errorf("-sem tira todas as pistas: não sobra nada para misturar")
+	}
+	sel.MixName = "sem-" + strings.Join(removed, "-")
+	return sel, nil
+}
+
 // customNamesJSON é o valor de --custom_output_names: põe cada pista com o
 // nome final em português (vozes.wav…) em vez do formato por omissão do
 // audio-separator, "<entrada>_(Vocals)_<modelo>.wav".
@@ -135,8 +172,9 @@ func SeparatorArgs(input, outDir, modelDir string, p Preset) []string {
 		"--model_filename", p.Model,
 		"--model_file_dir", modelDir,
 		"--output_dir", outDir,
-		// WAV à saída da separação: a conversão (FLAC para o estúdio) é
-		// feita depois, uma só vez, pelo ffmpeg.
+		// WAV à saída da separação: a conversão para o formato pedido é feita
+		// depois, uma só vez, pelo ffmpeg — e a mistura "sem X" parte do WAV
+		// sem perdas, em vez de somar MP3.
 		"--output_format", "WAV",
 		"--custom_output_names", customNamesJSON(),
 	}
@@ -213,7 +251,7 @@ func codecArgs(format string) []string {
 	}
 }
 
-// EncodeArgs converte uma pista para o formato final, com o título nos
+// EncodeArgs converte uma pista WAV para o formato final, com o título nos
 // metadados — é o que aparece no leitor de música do telemóvel.
 func EncodeArgs(input, output, format, title string) []string {
 	args := []string{"-hide_banner", "-loglevel", "error", "-i", input}
@@ -221,113 +259,17 @@ func EncodeArgs(input, output, format, title string) []string {
 	return append(args, "-metadata", "title="+title, "-y", output)
 }
 
-// Track é uma pista a misturar, com o seu ganho (1 = volume original).
-type Track struct {
-	Path string
-	Gain float64
-}
-
-// gainFilter escreve um ganho para o filtro volume do ffmpeg.
-func gainFilter(g float64) string {
-	return "volume=" + strconv.FormatFloat(g, 'f', 3, 64)
-}
-
-// MixArgs soma as pistas numa só faixa, já no formato final, aplicando o
-// ganho de cada uma (o volume que o utilizador deixou no estúdio). O
-// normalize=0 é o que mantém o volume original: as pistas somadas
-// reconstroem a música, e o amix por omissão dividia cada uma pelo número de
-// entradas. Uma só pista não passa pelo amix.
-func MixArgs(tracks []Track, output, format, title string) []string {
+// MixArgs soma as pistas numa só faixa, já no formato final. O normalize=0 é
+// o que mantém o volume original: as pistas somadas reconstroem a música, e
+// o amix por omissão dividia cada uma pelo número de entradas.
+func MixArgs(inputs []string, output, format, title string) []string {
 	args := []string{"-hide_banner", "-loglevel", "error"}
-	for _, t := range tracks {
-		args = append(args, "-i", t.Path)
+	for _, in := range inputs {
+		args = append(args, "-i", in)
 	}
-	if len(tracks) == 1 {
-		if tracks[0].Gain != 1 {
-			args = append(args, "-af", gainFilter(tracks[0].Gain))
-		}
-	} else {
-		var graph, labels strings.Builder
-		for i, t := range tracks {
-			if t.Gain == 1 {
-				fmt.Fprintf(&labels, "[%d:a]", i)
-				continue
-			}
-			fmt.Fprintf(&graph, "[%d:a]%s[g%d];", i, gainFilter(t.Gain), i)
-			fmt.Fprintf(&labels, "[g%d]", i)
-		}
-		graph.WriteString(labels.String())
-		fmt.Fprintf(&graph, "amix=inputs=%d:normalize=0", len(tracks))
-		args = append(args, "-filter_complex", graph.String())
-	}
+	args = append(args, "-filter_complex", fmt.Sprintf("amix=inputs=%d:normalize=0", len(inputs)))
 	args = append(args, codecArgs(format)...)
 	return append(args, "-metadata", "title="+title, "-y", output)
-}
-
-// Render mistura as pistas num ficheiro (ver MixArgs).
-func Render(ctx context.Context, tracks []Track, output, format, title string) error {
-	if len(tracks) == 0 {
-		return fmt.Errorf("escolhe pelo menos uma pista")
-	}
-	if !slices.Contains(Formats, format) {
-		return fmt.Errorf("formato inválido: %q (usa %s)", format, strings.Join(Formats, ", "))
-	}
-	return runFFmpeg(ctx, MixArgs(tracks, output, format, title))
-}
-
-// peaksRate é a frequência a que o ffmpeg reamostra a pista para medir a
-// forma de onda: chega para o desenho e mantém 5 minutos em ~5MB.
-const peaksRate = 8000
-
-// PeaksArgs pede ao ffmpeg a pista em PCM mono de 16 bits, no stdout.
-func PeaksArgs(input string) []string {
-	return []string{"-hide_banner", "-loglevel", "error", "-i", input,
-		"-ac", "1", "-ar", strconv.Itoa(peaksRate), "-f", "s16le", "-"}
-}
-
-// Peaks é a forma de onda de uma pista: o pico de cada intervalo, entre 0 e
-// 1, e a duração em segundos.
-type Peaks struct {
-	Duration float64   `json:"duration"`
-	Values   []float64 `json:"values"`
-}
-
-// ComputePeaks reduz PCM mono s16le a n picos. Função pura.
-func ComputePeaks(pcm []byte, rate, n int) Peaks {
-	samples := len(pcm) / 2
-	p := Peaks{Duration: float64(samples) / float64(rate)}
-	if samples == 0 || n <= 0 {
-		return p
-	}
-	n = min(n, samples)
-	p.Values = make([]float64, n)
-	for i := range n {
-		from, to := i*samples/n, (i+1)*samples/n
-		var peak int
-		for j := from; j < to; j++ {
-			v := int(int16(binary.LittleEndian.Uint16(pcm[2*j:])))
-			peak = max(peak, v, -v)
-		}
-		p.Values[i] = math.Round(float64(peak)/32768*1000) / 1000
-	}
-	return p
-}
-
-// MeasurePeaks mede a forma de onda de uma pista com n pontos.
-func MeasurePeaks(ctx context.Context, input string, n int) (Peaks, error) {
-	cmd := exec.CommandContext(ctx, "ffmpeg", PeaksArgs(input)...)
-	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
-	cmd.WaitDelay = 10 * time.Second
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return Peaks{}, ctx.Err()
-		}
-		return Peaks{}, fmt.Errorf("ffmpeg falhou a medir %s: %w\n%s", filepath.Base(input), err,
-			procio.Tail(strings.TrimSpace(stderr.String()), 1024))
-	}
-	return ComputePeaks(stdout.Bytes(), peaksRate, n), nil
 }
 
 // tqdmPercent apanha a percentagem das barras do tqdm que o audio-separator
@@ -393,22 +335,38 @@ func Separate(ctx context.Context, input, outDir, modelDir string, p Preset, log
 	return Collect(outDir)
 }
 
-// Export converte as pistas pedidas (pela ordem dada) para destDir, uma por
-// ficheiro <pista>.<formato>. title (o nome da música) vai para os
-// metadados. Devolve os ficheiros criados.
-func Export(ctx context.Context, tracks map[string]string, names []string, destDir, format, title string) ([]string, error) {
+// Export guarda o resultado em destDir: as pistas de sel.Keep e, se pedida, a
+// mistura "sem X", tudo no formato final. title (o nome da música) vai para
+// os metadados. Devolve os ficheiros criados.
+func Export(ctx context.Context, tracks map[string]string, sel Selection, destDir, format, title string) ([]string, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return nil, fmt.Errorf("não foi possível criar %s: %w", destDir, err)
 	}
 
 	var files []string
-	for _, stem := range names {
+	for _, stem := range sel.Keep {
 		src, ok := tracks[stem]
 		if !ok {
 			return files, fmt.Errorf("o modelo não produziu a pista %q", stem)
 		}
 		dst := filepath.Join(destDir, stem+"."+format)
 		if err := runFFmpeg(ctx, EncodeArgs(src, dst, format, title+" ("+stem+")")); err != nil {
+			return files, err
+		}
+		files = append(files, dst)
+	}
+
+	if sel.MixName != "" {
+		inputs := make([]string, 0, len(sel.MixStems))
+		for _, stem := range sel.MixStems {
+			src, ok := tracks[stem]
+			if !ok {
+				return files, fmt.Errorf("o modelo não produziu a pista %q", stem)
+			}
+			inputs = append(inputs, src)
+		}
+		dst := filepath.Join(destDir, sel.MixName+"."+format)
+		if err := runFFmpeg(ctx, MixArgs(inputs, dst, format, title+" ("+sel.MixName+")")); err != nil {
 			return files, err
 		}
 		files = append(files, dst)

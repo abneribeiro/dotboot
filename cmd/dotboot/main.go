@@ -1,54 +1,58 @@
-// dotboot — descarrega vídeos e áudio (yt-dlp) e separa músicas em pistas
-// (audio-separator), com uma página web local: um estúdio para ouvir as
-// pistas em conjunto e descarregar as combinações que se quiser.
+// dotboot — descarrega vídeos e áudio (yt-dlp) e separa músicas em pistas,
+// pelo terminal: uma TUI e subcomandos para scripts.
 //
-// Uso:
+// Subcomandos:
 //
-//	dotboot [-addr 127.0.0.1:8765] [-no-browser]   Arranca o servidor e abre a página
-//	dotboot version                                Mostra a versão
-//	dotboot health                                 Confirma que o servidor responde (HEALTHCHECK)
+//	dotboot              Abre a TUI (num terminal)
+//	dotboot tui          Abre a TUI
+//	dotboot download     Descarrega vídeos ou áudio
+//	dotboot stems        Separa uma música em pistas (vozes, baixo, guitarra…)
+//	dotboot doctor       Verifica dependências e configuração
+//	dotboot version      Mostra a versão
 package main
 
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
 	"runtime/debug"
-	"strings"
 	"syscall"
-	"time"
 
+	"github.com/charmbracelet/x/term"
+
+	"github.com/abneribeiro/dotboot/internal/cli"
 	"github.com/abneribeiro/dotboot/internal/config"
 	"github.com/abneribeiro/dotboot/internal/doctor"
-	"github.com/abneribeiro/dotboot/internal/store"
-	"github.com/abneribeiro/dotboot/internal/web"
+	"github.com/abneribeiro/dotboot/internal/tui"
 )
 
-const usageText = `dotboot — vídeos, áudio e stems numa página web local
+const usageText = `dotboot — vídeos, áudio e stems no terminal (yt-dlp, ffmpeg, audio-separator)
 
 Uso:
-  dotboot [flags]          Arranca o servidor e abre a página no browser
-  dotboot version          Mostra a versão
-  dotboot [-addr] health   Confirma que o servidor responde
+  dotboot                            Abre a interface (TUI)
+  dotboot download [flags] URL...    Descarrega vídeos ou áudio
+  dotboot stems [flags] URL|FICH...  Separa uma música em pistas (vozes, baixo, guitarra…)
+  dotboot doctor                     Verifica dependências e configuração
+  dotboot version                    Mostra a versão
+  dotboot help                       Mostra esta ajuda
 
-Flags:
-  -addr ENDEREÇO      Onde o servidor escuta (default 127.0.0.1:8765, ou $DOTBOOT_ADDR)
-  -no-browser         Não abre o browser
+Exemplos:
+  dotboot download -q 720 -o aulas "https://youtube.com/watch?v=xxxx"
+  dotboot download -formato mp3 -o musica "https://youtube.com/watch?v=xxxx"
+  dotboot stems -sem guitarra ~/Musica/song.mp3
 
-As variáveis DOTBOOT_* (ver .env.example) podem ficar em
-~/.config/dotboot/config.env.
+A ajuda completa de cada subcomando: dotboot download -h, dotboot stems -h.
+As definições ficam em ~/.config/dotboot/config.env (editáveis na TUI).
 `
 
-// uploadMaxAge é quanto um ficheiro enviado e não usado fica guardado.
-const uploadMaxAge = 24 * time.Hour
+// errMissingDeps marca a falta de um binário externo. É um problema de
+// instalação, não um "erro fatal": o main mostra-o sem o formato do log.
+var errMissingDeps = errors.New("dependência em falta")
 
 // Preenchidas com -ldflags "-X main.version=..." pelo Makefile, pelo
 // GoReleaser e pelo Dockerfile.
@@ -59,169 +63,128 @@ var (
 )
 
 func main() {
-	// Antes das flags: o DOTBOOT_ADDR também pode vir do config.env.
-	config.LoadFiles()
-
-	fs := flag.NewFlagSet("dotboot", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
-	addr := fs.String("addr", envOr("DOTBOOT_ADDR", "127.0.0.1:8765"), "endereço do servidor")
-	noBrowser := fs.Bool("no-browser", false, "não abrir o browser")
-	showVersion := fs.Bool("version", false, "mostrar a versão")
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return
-		}
-		os.Exit(2)
+	cmd := "tui"
+	if len(os.Args) > 1 {
+		cmd = os.Args[1]
 	}
 
-	// O subcomando vem depois das flags: a imagem Docker já traz -addr no
-	// ENTRYPOINT, e "docker run dotboot:latest version" acrescenta-o no fim.
-	var err error
-	switch cmd := fs.Arg(0); {
-	case *showVersion || cmd == "version":
-		fmt.Println(versionString())
-	case cmd == "help":
+	// help e version não dependem da configuração: têm de funcionar mesmo
+	// com uma config inválida, que é precisamente quando se vai à procura.
+	switch cmd {
+	case "help", "-h", "--help":
 		fmt.Print(usageText)
-	case cmd == "health":
-		err = health(*addr)
-	case cmd == "":
-		err = run(*addr, !*noBrowser)
-	default:
-		fmt.Fprintf(os.Stderr, "comando desconhecido: %q\n\n%s", cmd, usageText)
+		return
+	case "version", "-v", "--version":
+		fmt.Println(versionString())
+		return
+	}
+
+	// Sem argumentos e sem terminal (um pipe, um cron), não há TUI para abrir.
+	if len(os.Args) < 2 && !(term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())) {
+		fmt.Fprint(os.Stderr, usageText)
 		os.Exit(2)
 	}
+
+	config.LoadFiles()
+	cfg, err := config.Load()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "configuração inválida: %v\n", err)
+		os.Exit(1)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	slog.SetDefault(logger)
+
+	// Os sinais são tratados apenas aqui; todos os modos recebem o mesmo
+	// contexto e cancelam os processos externos com SIGINT.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// Depois do primeiro sinal, o seguinte volta ao comportamento por omissão
+	// e termina o processo de imediato.
+	context.AfterFunc(ctx, stop)
+
+	args := os.Args[min(2, len(os.Args)):]
+	switch cmd {
+	case "tui":
+		configureJSRuntime(cfg, logger)
+		err = tui.Run(ctx, cfg, shortVersion())
+	case "download":
+		err = runDownload(ctx, cfg, logger, args)
+	case "stems":
+		err = runStems(ctx, cfg, logger, args)
+	case "doctor":
+		err = doctor.Run(ctx, cfg, os.Stdout)
+	default:
+		fmt.Fprintf(os.Stderr, "subcomando desconhecido: %q\n\n%s", cmd, usageText)
+		os.Exit(2)
+	}
+
+	switch {
+	case err == nil:
+	case errors.Is(err, cli.ErrUsage):
+		// Já foi impresso, com a ajuda, no stderr.
+		os.Exit(2)
+	case errors.Is(err, cli.ErrInterrupted):
+		// 128 + SIGINT, como as shells: um CTRL+C não é um "erro fatal".
+		os.Exit(130)
+	case errors.Is(err, errMissingDeps):
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	case errors.Is(err, cli.ErrPartial), errors.Is(err, doctor.ErrProblems):
+		// Já foi reportado; só o código de saída é que muda.
+		os.Exit(1)
+	default:
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// health pergunta ao servidor se está vivo (o HEALTHCHECK da imagem).
-func health(addr string) error {
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + browserHost(addr) + "/api/info")
-	if err != nil {
+func runDownload(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
+	// O ffmpeg continua a ser necessário: o yt-dlp usa-o para juntar as
+	// streams de vídeo e áudio dos formatos de melhor qualidade, e o ffprobe
+	// decide se o resultado já é MP4 compatível.
+	if err := checkBinaries(args, "yt-dlp", "ffmpeg", "ffprobe"); err != nil {
 		return err
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("o servidor respondeu %s", resp.Status)
-	}
-	return nil
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func run(addr string, openBrowser bool) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("configuração inválida: %w", err)
-	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
-	slog.SetDefault(logger)
 	configureJSRuntime(cfg, logger)
+	return cli.Run(ctx, args, cfg, logger)
+}
 
-	st, err := store.Open(cfg.DataDir)
-	if err != nil {
-		return err
+func runStems(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
+	// O yt-dlp só é preciso para URLs, e o cli.RunStems verifica-o nesse caso.
+	if err := checkBinaries(args, "ffmpeg", "audio-separator"); err != nil {
+		return fmt.Errorf("%w — a separação de stems instala-se com `make deps-stems`, ou usa a imagem Docker (make stems-build)", err)
 	}
-	// Ao arrancar nenhum trabalho está a correr: o que ficou a meio de uma
-	// execução anterior é lixo.
-	st.Clean(uploadMaxAge)
+	configureJSRuntime(cfg, logger)
+	return cli.RunStems(ctx, args, cfg, logger)
+}
 
-	// Os sinais são tratados apenas aqui. Depois do primeiro, o seguinte
-	// volta ao comportamento por omissão e termina o processo de imediato.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	context.AfterFunc(ctx, stop)
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("não foi possível escutar em %s (já há um dotboot a correr?): %w", addr, err)
+// checkBinaries garante que as dependências externas estão no PATH. Um
+// pedido de ajuda (-h) passa sempre: ler a ajuda não pode exigir o ffmpeg.
+func checkBinaries(args []string, names ...string) error {
+	if wantsHelp(args) {
+		return nil
 	}
-	srv := web.New(cfg, st, shortVersion(), logger)
-	httpSrv := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
-
-	url := "http://" + browserHost(ln.Addr().String())
-	fmt.Printf("dotboot %s a correr em %s (ctrl+c para sair)\n", shortVersion(), url)
-	for _, c := range doctor.Collect(ctx, cfg) {
-		if c.Level == doctor.LevelFail {
-			logger.Warn("falta uma dependência: vê Definições → Diagnóstico", "verificação", c.Name, "detalhe", c.Detail)
+	for _, name := range names {
+		if _, err := exec.LookPath(name); err != nil {
+			return fmt.Errorf("%w: %s não está no PATH (instala com `make deps`, ou vê o que falta com `dotboot doctor`)",
+				errMissingDeps, name)
 		}
-	}
-	if openBrowser {
-		go openURL(url, logger)
-	}
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- httpSrv.Serve(ln) }()
-	select {
-	case err := <-errCh:
-		return err
-	case <-ctx.Done():
-	}
-
-	fmt.Println("\na encerrar: a cancelar os trabalhos em curso…")
-	// Primeiro os trabalhos (espera pelos processos filhos) e os streams SSE,
-	// que nunca acabariam sozinhos; depois o servidor HTTP.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	srv.Shutdown()
-	if err := httpSrv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		return err
 	}
 	return nil
 }
 
-// browserHost troca o endereço de escuta por um que o browser abra:
-// 0.0.0.0 e :: não são destinos.
-func browserHost(listen string) string {
-	host, port, err := net.SplitHostPort(listen)
-	if err != nil {
-		return listen
-	}
-	if ip := net.ParseIP(host); ip == nil || ip.IsUnspecified() || ip.IsLoopback() {
-		host = "localhost"
-	}
-	return net.JoinHostPort(host, port)
-}
-
-// openURL abre a página no browser do sistema. No WSL o browser é o do
-// Windows (wslview, ou o explorer.exe que abre o browser por omissão).
-func openURL(url string, logger *slog.Logger) {
-	var candidates [][]string
-	switch runtime.GOOS {
-	case "darwin":
-		candidates = [][]string{{"open", url}}
-	case "windows":
-		candidates = [][]string{{"rundll32", "url.dll,FileProtocolHandler", url}}
-	default:
-		if isWSL() {
-			candidates = append(candidates, []string{"wslview", url}, []string{"explorer.exe", url})
-		}
-		candidates = append(candidates, []string{"xdg-open", url})
-	}
-	for _, c := range candidates {
-		if _, err := exec.LookPath(c[0]); err != nil {
-			continue
-		}
-		// O explorer.exe devolve 1 mesmo quando abre: só conta conseguir lançá-lo.
-		if err := exec.Command(c[0], c[1:]...).Start(); err == nil {
-			return
+// wantsHelp reporta se os argumentos de um subcomando pedem a ajuda.
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "-h", "-help", "--help":
+			return true
+		case "--":
+			return false
 		}
 	}
-	logger.Info("abre a página no browser", "url", url)
-}
-
-func isWSL() bool {
-	data, err := os.ReadFile("/proc/version")
-	return err == nil && strings.Contains(strings.ToLower(string(data)), "microsoft")
+	return false
 }
 
 // configureJSRuntime escolhe o runtime JavaScript com que o yt-dlp resolve os
@@ -273,8 +236,8 @@ func versionInfo() (v, c, d string) {
 	return v, c, d
 }
 
-// shortVersion é a versão para a página: a tag, ou o commit num build de
-// desenvolvimento.
+// shortVersion é a versão para o cabeçalho da TUI: a tag, ou o commit num
+// build de desenvolvimento.
 func shortVersion() string {
 	v, c, _ := versionInfo()
 	if v == "dev" && c != "" {

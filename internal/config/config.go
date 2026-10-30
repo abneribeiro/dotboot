@@ -8,21 +8,23 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/joho/godotenv"
 )
 
-// Config agrega a configuração do servidor.
+// Config agrega a configuração do CLI e da TUI.
 type Config struct {
-	// DataDir guarda tudo o que o dotboot produz — separações, downloads,
-	// uploads e cookies (DOTBOOT_DATA_DIR, default ~/.local/share/dotboot).
-	// Nada sai daqui sem o utilizador o descarregar pelo browser.
-	DataDir string
+	// OutputDir é o caminho base de saída (DOTBOOT_OUTPUT_DIR): usado quando
+	// -o não é passado, e raiz de um -o relativo. Um -o absoluto ignora-o.
+	// Vazio = diretório atual.
+	OutputDir string
 
 	// TempDir guarda o trabalho intermédio da separação de stems
 	// (DOTBOOT_TEMP_DIR, default os.TempDir()).
@@ -48,9 +50,9 @@ type Config struct {
 	ModelsDir string
 }
 
-// Chaves das variáveis de ambiente.
+// Chaves das variáveis de ambiente, partilhadas com a TUI (Definições).
 const (
-	KeyDataDir     = "DOTBOOT_DATA_DIR"
+	KeyOutputDir   = "DOTBOOT_OUTPUT_DIR"
 	KeyTempDir     = "DOTBOOT_TEMP_DIR"
 	KeyLogLevel    = "DOTBOOT_LOG_LEVEL"
 	KeyCookiesFile = "DOTBOOT_COOKIES_FILE"
@@ -75,7 +77,7 @@ func FilePath() string {
 // prioridade é: ambiente > ./.env > config.env. Ambos são opcionais.
 func LoadFiles() {
 	_ = godotenv.Load(".env")     // opcional: só existe num projeto
-	_ = godotenv.Load(FilePath()) // opcional: o utilizador cria-o se quiser
+	_ = godotenv.Load(FilePath()) // opcional: só existe depois de gravar Definições
 }
 
 // Load lê a configuração a partir do ambiente do processo.
@@ -86,7 +88,7 @@ func Load() (*Config, error) {
 // loadFrom é a implementação testável de Load, com o ambiente injetado.
 func loadFrom(getenv func(string) string) (*Config, error) {
 	cfg := &Config{
-		DataDir:     defaultDataDir(getenv),
+		OutputDir:   getenv(KeyOutputDir),
 		TempDir:     os.TempDir(),
 		LogLevel:    slog.LevelInfo,
 		JSRuntimes:  getenv(KeyJSRuntimes),
@@ -94,9 +96,6 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 		CookiesFile: getenv(KeyCookiesFile),
 	}
 
-	if v := getenv(KeyDataDir); v != "" {
-		cfg.DataDir = v
-	}
 	if v := getenv(KeyTempDir); v != "" {
 		cfg.TempDir = v
 	}
@@ -121,7 +120,7 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 
 	// O ~ só é expandido pela shell na linha de comandos; num .env chegava
 	// aqui literal e criava uma pasta "~".
-	for _, p := range []*string{&cfg.DataDir, &cfg.TempDir, &cfg.ModelsDir, &cfg.CookiesFile} {
+	for _, p := range []*string{&cfg.OutputDir, &cfg.TempDir, &cfg.ModelsDir, &cfg.CookiesFile} {
 		expanded, err := ExpandHome(*p, getenv)
 		if err != nil {
 			return nil, err
@@ -165,17 +164,6 @@ func ExpandHome(path string, getenv func(string) string) (string, error) {
 	return filepath.Join(home, strings.TrimPrefix(path, "~")), nil
 }
 
-// defaultDataDir segue a convenção XDG para dados de aplicações.
-func defaultDataDir(getenv func(string) string) string {
-	if dir := getenv("XDG_DATA_HOME"); dir != "" {
-		return filepath.Join(dir, "dotboot")
-	}
-	if home := getenv("HOME"); home != "" {
-		return filepath.Join(home, ".local", "share", "dotboot")
-	}
-	return filepath.Join(os.TempDir(), "dotboot")
-}
-
 // defaultModelsDir segue a convenção XDG para caches, como o resto das
 // ferramentas que descarregam modelos.
 func defaultModelsDir(getenv func(string) string) string {
@@ -189,4 +177,72 @@ func defaultModelsDir(getenv func(string) string) string {
 		return filepath.Join(dir, "dotboot", "models")
 	}
 	return filepath.Join(os.TempDir(), "dotboot-models")
+}
+
+// Save grava values (chave → valor) em path, no formato do .env. Preserva as
+// outras linhas e os comentários e substitui só as chaves pedidas; uma chave
+// com valor vazio é removida. Cria a pasta e deixa o ficheiro com 0600 (pode
+// apontar para cookies, que são credenciais).
+func Save(path string, values map[string]string) error {
+	var lines []string
+	if f, err := os.Open(path); err == nil {
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+		}
+		f.Close()
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("erro ao ler %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("erro ao ler %s: %w", path, err)
+	}
+
+	done := make(map[string]bool, len(values))
+	var out []string
+	for _, line := range lines {
+		key, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+		value, wanted := values[key]
+		if !ok || !wanted {
+			out = append(out, line)
+			continue
+		}
+		done[key] = true
+		if value != "" {
+			out = append(out, key+"="+quote(value))
+		}
+	}
+
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !done[k] && values[k] != "" {
+			out = append(out, k+"="+quote(values[k]))
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("não foi possível criar %s: %w", filepath.Dir(path), err)
+	}
+	tmp := path + ".tmp"
+	content := strings.Join(out, "\n")
+	if content != "" {
+		content += "\n"
+	}
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("não foi possível gravar %s: %w", path, err)
+	}
+	return os.Rename(tmp, path)
+}
+
+// quote põe entre aspas um valor com espaços ou caracteres especiais, para o
+// godotenv o ler tal e qual (ex: "/home/ana/Os Meus Vídeos").
+func quote(v string) string {
+	if strings.ContainsAny(v, " \t#\"'\\$") {
+		return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v) + `"`
+	}
+	return v
 }

@@ -50,16 +50,21 @@ func TestVersionStringIncluiAVersao(t *testing.T) {
 	}
 }
 
-func TestBrowserHost(t *testing.T) {
-	tests := map[string]string{
-		"127.0.0.1:8080":   "localhost:8080",
-		"0.0.0.0:9000":     "localhost:9000",
-		"[::]:8080":        "localhost:8080",
-		"192.168.1.5:8080": "192.168.1.5:8080",
+func TestWantsHelp(t *testing.T) {
+	tests := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"-h"}, true},
+		{[]string{"https://youtu.be/x", "--help"}, true},
+		{[]string{"-o", "x", "https://youtu.be/x"}, false},
+		// Depois de "--" é um argumento, não um pedido de ajuda.
+		{[]string{"--", "-h"}, false},
+		{nil, false},
 	}
-	for in, want := range tests {
-		if got := browserHost(in); got != want {
-			t.Errorf("browserHost(%q) = %q, quero %q", in, got, want)
+	for _, tt := range tests {
+		if got := wantsHelp(tt.args); got != tt.want {
+			t.Errorf("wantsHelp(%v) = %v, esperado %v", tt.args, got, tt.want)
 		}
 	}
 }

@@ -4,7 +4,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/joho/godotenv"
 )
 
 // envMap devolve um getenv baseado num mapa, para testes determinísticos.
@@ -23,20 +26,17 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.ModelsDir != "/home/ana/.cache/dotboot/models" {
 		t.Errorf("ModelsDir = %q, esperado a cache do utilizador", cfg.ModelsDir)
 	}
-	if cfg.DataDir != "/home/ana/.local/share/dotboot" {
-		t.Errorf("DataDir = %q, esperado ~/.local/share/dotboot", cfg.DataDir)
-	}
-	if cfg.CookiesFile != "" || cfg.JSRuntimes != "" {
-		t.Errorf("cookies/js deviam vir vazios: %+v", cfg)
+	if cfg.OutputDir != "" || cfg.CookiesFile != "" || cfg.JSRuntimes != "" {
+		t.Errorf("saída/cookies/js deviam vir vazios: %+v", cfg)
 	}
 
 	// O XDG_CACHE_HOME tem prioridade, como nas outras ferramentas.
-	cfg, err = loadFrom(envMap(map[string]string{"HOME": "/home/ana", "XDG_CACHE_HOME": "/cache", "XDG_DATA_HOME": "/dados"}))
+	cfg, err = loadFrom(envMap(map[string]string{"HOME": "/home/ana", "XDG_CACHE_HOME": "/cache"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ModelsDir != "/cache/dotboot/models" || cfg.DataDir != "/dados/dotboot" {
-		t.Errorf("ModelsDir/DataDir = %q/%q, esperado o XDG", cfg.ModelsDir, cfg.DataDir)
+	if cfg.ModelsDir != "/cache/dotboot/models" {
+		t.Errorf("ModelsDir = %q, esperado /cache/dotboot/models", cfg.ModelsDir)
 	}
 }
 
@@ -47,7 +47,7 @@ func TestLoadFromOverrides(t *testing.T) {
 	}
 
 	cfg, err := loadFrom(envMap(map[string]string{
-		KeyDataDir:     "/dados",
+		KeyOutputDir:   "/videos",
 		KeyTempDir:     "/scratch",
 		KeyLogLevel:    "debug",
 		KeyCookiesFile: cookies,
@@ -57,35 +57,35 @@ func TestLoadFromOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
 	}
-	if cfg.DataDir != "/dados" || cfg.TempDir != "/scratch" || cfg.ModelsDir != "/modelos" {
-		t.Errorf("caminhos = %q %q %q", cfg.DataDir, cfg.TempDir, cfg.ModelsDir)
+	if cfg.OutputDir != "/videos" || cfg.TempDir != "/scratch" || cfg.ModelsDir != "/modelos" {
+		t.Errorf("caminhos = %q %q %q", cfg.OutputDir, cfg.TempDir, cfg.ModelsDir)
 	}
 	if cfg.LogLevel != slog.LevelDebug || cfg.CookiesFile != cookies || cfg.JSRuntimes != "node" {
 		t.Errorf("config = %+v", cfg)
 	}
 }
 
-// Num .env o ~ chega literal: sem expansão, criava-se uma pasta chamada "~".
+// Num .env o ~ chega literal: sem expansão, o CLI criava uma pasta chamada "~".
 func TestLoadFromExpandeTil(t *testing.T) {
 	cfg, err := loadFrom(envMap(map[string]string{
-		"HOME":     "/home/ana",
-		KeyDataDir: "~/dotboot",
-		KeyTempDir: "~",
+		"HOME":       "/home/ana",
+		KeyOutputDir: "~/Videos",
+		KeyTempDir:   "~",
 	}))
 	if err != nil {
 		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
 	}
-	if cfg.DataDir != "/home/ana/dotboot" || cfg.TempDir != "/home/ana" {
-		t.Errorf("DataDir/TempDir = %q/%q", cfg.DataDir, cfg.TempDir)
+	if cfg.OutputDir != "/home/ana/Videos" || cfg.TempDir != "/home/ana" {
+		t.Errorf("OutputDir/TempDir = %q/%q", cfg.OutputDir, cfg.TempDir)
 	}
 
 	// Só o ~ inicial é especial.
-	cfg, err = loadFrom(envMap(map[string]string{"HOME": "/home/ana", KeyDataDir: "/dados/~backup"}))
+	cfg, err = loadFrom(envMap(map[string]string{"HOME": "/home/ana", KeyOutputDir: "/dados/~backup"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DataDir != "/dados/~backup" {
-		t.Errorf("DataDir = %q, esperado inalterado", cfg.DataDir)
+	if cfg.OutputDir != "/dados/~backup" {
+		t.Errorf("OutputDir = %q, esperado inalterado", cfg.OutputDir)
 	}
 }
 
@@ -105,6 +105,52 @@ func TestLoadFromInvalidValues(t *testing.T) {
 				t.Errorf("loadFrom(%v) devia devolver erro", tt.env)
 			}
 		})
+	}
+}
+
+func TestSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "config.env")
+
+	// Ficheiro novo: cria a pasta, escreve ordenado e com 0600.
+	if err := Save(path, map[string]string{KeyOutputDir: "/home/ana/Os Meus Vídeos", KeyModelsDir: "/m"}); err != nil {
+		t.Fatalf("Save falhou: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("permissões = %o, esperado 600", info.Mode().Perm())
+	}
+
+	// Segunda gravação: preserva o resto, substitui e remove (valor vazio).
+	if err := os.WriteFile(path, []byte("# comentário\nOUTRA=1\n"+KeyOutputDir+"=/antigo\n"+KeyModelsDir+"=/m\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, map[string]string{KeyOutputDir: "/novo", KeyModelsDir: ""}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	got := string(data)
+	for _, want := range []string{"# comentário", "OUTRA=1", KeyOutputDir + "=/novo"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("falta %q em:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, KeyModelsDir) || strings.Contains(got, "/antigo") {
+		t.Errorf("a chave vazia devia sair e a antiga ser substituída:\n%s", got)
+	}
+
+	// Um valor com espaços tem de voltar igual pelo godotenv.
+	if err := Save(path, map[string]string{KeyOutputDir: `/home/ana/Os "Meus" Vídeos`}); err != nil {
+		t.Fatal(err)
+	}
+	env, err := godotenv.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env[KeyOutputDir] != `/home/ana/Os "Meus" Vídeos` {
+		t.Errorf("valor lido = %q", env[KeyOutputDir])
 	}
 }
 
