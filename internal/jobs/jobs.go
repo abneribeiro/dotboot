@@ -1,7 +1,7 @@
 // Package jobs é o motor partilhado pelo CLI e pela TUI: valida um pedido
-// (descarregar vídeo, extrair áudio, separar stems), executa-o e relata o
-// progresso por eventos. Não escreve no terminal — quem chama decide como
-// mostrar cada Event.
+// (descarregar vídeo ou extrair áudio), executa-o e relata o progresso por
+// eventos. Não escreve no terminal — quem chama decide como mostrar cada
+// Event.
 package jobs
 
 import (
@@ -29,8 +29,6 @@ const (
 	StageMerge    Stage = "a juntar vídeo e áudio"
 	StageExtract  Stage = "a extrair o áudio"
 	StageConvert  Stage = "a converter para MP4"
-	StageSeparate Stage = "a separar as pistas"
-	StageExport   Stage = "a exportar"
 )
 
 // Event é uma atualização de um trabalho. Os campos vazios não mudam o que
@@ -50,7 +48,7 @@ type Event struct {
 	// Index e Count: posição numa lista (playlist, várias músicas).
 	Index int
 	Count int
-	// Log é uma linha de output (yt-dlp, ffmpeg, audio-separator).
+	// Log é uma linha de output (yt-dlp, ffmpeg).
 	Log string
 }
 
@@ -60,7 +58,7 @@ type Reporter func(Event)
 
 // Result descreve o que um trabalho produziu.
 type Result struct {
-	// OutputDir é a pasta de saída (para os stems, a pasta-base).
+	// OutputDir é a pasta de saída.
 	OutputDir string
 	// Files são os ficheiros finais criados ou atualizados.
 	Files []string
@@ -70,7 +68,6 @@ type Result struct {
 type Env struct {
 	OutputBase  string // DOTBOOT_OUTPUT_DIR: base de -o relativos
 	TempDir     string
-	ModelsDir   string
 	JSRuntimes  string
 	CookiesFile string
 }
@@ -80,7 +77,6 @@ func EnvFrom(cfg *config.Config) Env {
 	return Env{
 		OutputBase:  cfg.OutputDir,
 		TempDir:     cfg.TempDir,
-		ModelsDir:   cfg.ModelsDir,
 		JSRuntimes:  cfg.JSRuntimes,
 		CookiesFile: cfg.CookiesFile,
 	}
@@ -111,7 +107,7 @@ func FormatETA(d time.Duration) string {
 
 // PrepareOutputDir cria a pasta de saída e confirma que se pode escrever
 // nela. Corre antes do trabalho: sem isto, uma pasta só de leitura (ex: "/")
-// só falhava no fim, depois de minutos de download e de separação.
+// só falhava no fim, depois de minutos de download e de conversão.
 func PrepareOutputDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return outputDirError(dir, err)

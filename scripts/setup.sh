@@ -37,17 +37,15 @@ fi
 step "2/4 Instalação"
 cli=${CLI:-}
 if [ -z "$cli" ]; then
-	# Docker por omissão: traz tudo (incluindo a separação de stems) sem
-	# instalar nada no sistema.
+	# Docker por omissão: traz tudo sem instalar nada no sistema.
 	default=native
 	if [ "$docker_ok" = 1 ]; then
 		default=docker
 	fi
 	cli=$default
 	if [ "$interactive" = 1 ]; then
-		echo "  1) docker  tudo numa imagem (~3GB), incluindo os stems; nada instalado no sistema"
-		echo "  2) native  binário em $BINDIR + yt-dlp, deno e ffmpeg no sistema (precisa de Go);"
-		echo "             os stems instalam-se à parte com make deps-stems"
+		echo "  1) docker  tudo numa imagem (~300MB); nada instalado no sistema"
+		echo "  2) native  binário em $BINDIR + yt-dlp, deno e ffmpeg no sistema (precisa de Go)"
 		read -r -p "Como queres instalar? [$default] " answer
 		case "${answer:-$default}" in
 		1 | docker) cli=docker ;;
@@ -72,10 +70,6 @@ native)
 	fi
 	make deps
 	make install
-	if [ "$interactive" = 1 ]; then
-		read -r -p "Instalar também a separação de stems (~1.5GB, precisa de um compilador C)? [s/N] " answer
-		case "$answer" in [sSyY]*) make deps-stems ;; esac
-	fi
 	;;
 *)
 	echo "  CLI inválida: $cli (usa docker ou native)" >&2

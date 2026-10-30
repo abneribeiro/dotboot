@@ -3,31 +3,26 @@
 #   - yt-dlp e deno em BINDIR (default ~/.local/bin), sem sudo, verificados
 #     pelo checksum publicado em cada release;
 #   - ffmpeg/ffprobe pelo gestor de pacotes do sistema (pede confirmação
-#     antes de usar o sudo);
-#   - com --stems, o audio-separator (separação de stems) via uv.
+#     antes de usar o sudo).
 #
-#   scripts/install-deps.sh [--check] [--stems] [--yes]
+#   scripts/install-deps.sh [--check] [--yes]
 #
-# Versões: YTDLP_VERSION (default latest), DENO_VERSION, UV_VERSION e
-# AUDIO_SEPARATOR_VERSION podem ser fixadas pelo ambiente.
+# Versões: YTDLP_VERSION (default latest) e DENO_VERSION podem ser fixadas
+# pelo ambiente.
 set -euo pipefail
 
 YTDLP_VERSION=${YTDLP_VERSION:-latest}
 DENO_VERSION=${DENO_VERSION:-2.9.8}
-UV_VERSION=${UV_VERSION:-0.13.6}
-AUDIO_SEPARATOR_VERSION=${AUDIO_SEPARATOR_VERSION:-0.47.1}
 BINDIR=${BINDIR:-$HOME/.local/bin}
 
 check_only=0
-stems=0
 assume_yes=${YES:-0}
 for arg in "$@"; do
 	case "$arg" in
 	--check) check_only=1 ;;
-	--stems) stems=1 ;;
 	--yes | -y) assume_yes=1 ;;
 	-h | --help)
-		sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*)
@@ -134,7 +129,6 @@ report() {
 	else
 		warn "nenhum runtime JavaScript (deno/node): o YouTube terá menos formatos"
 	fi
-	if have audio-separator; then ok "audio-separator (stems)"; else warn "audio-separator não instalado (só para dotboot stems: make deps-stems)"; fi
 	return "$missing"
 }
 
@@ -203,64 +197,12 @@ install_ffmpeg() {
 	ok "$(ffmpeg -version | head -n 1 | cut -d' ' -f1-3)"
 }
 
-install_uv() {
-	local tarball=uv-$triple.tar.gz
-	local base="https://github.com/astral-sh/uv/releases/download/$UV_VERSION"
-	download "$base/$tarball" "$tmp/$tarball"
-	download "$base/$tarball.sha256" "$tmp/$tarball.sha256"
-	verify "$tmp/$tarball" "$(awk '{print $1; exit}' "$tmp/$tarball.sha256")"
-	tar -xzf "$tmp/$tarball" -C "$tmp"
-	install -m 0755 "$tmp/uv-$triple/uv" "$BINDIR/uv"
-	ok "$("$BINDIR/uv" --version) em $BINDIR"
-}
-
-install_audio_separator() {
-	# O diffq, uma dependência do Demucs, só existe em código fonte: sem um
-	# compilador C a instalação falha a meio, depois de descarregar o PyTorch.
-	if ! have cc && ! have gcc; then
-		if [ "$os" = Darwin ]; then
-			fail "falta um compilador C: xcode-select --install"
-		else
-			fail "falta um compilador C: sudo apt install build-essential (ou o equivalente da tua distribuição)"
-		fi
-		exit 1
-	fi
-
-	local uv=uv
-	if ! have uv; then
-		install_uv
-		uv=$BINDIR/uv
-	fi
-	# Python 3.12 gerido pelo uv: o do sistema pode ser recente demais (o
-	# Ubuntu 26.04 traz o 3.14, e o audio-separator exclui o 3.14.1). No
-	# Linux, o índice CPU do PyTorch evita descarregar ~3GB de bibliotecas
-	# CUDA que sem GPU NVIDIA não servem para nada.
-	local extra=()
-	if [ "$os" = Linux ]; then
-		extra=(--index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match)
-	fi
-	# ${extra[@]+…}: com set -u, o bash 3.2 do macOS trata um array vazio
-	# como variável não definida.
-	# O audio-separator 0.47 importa o audioread sem o declarar (o librosa
-	# deixou de o trazer): sem o --with, falha logo ao arrancar.
-	UV_TOOL_BIN_DIR=$BINDIR "$uv" tool install --force --python 3.12 ${extra[@]+"${extra[@]}"} \
-		--with audioread "audio-separator[cpu]==$AUDIO_SEPARATOR_VERSION"
-	ok "audio-separator $AUDIO_SEPARATOR_VERSION em $BINDIR (os modelos descarregam-se no primeiro uso)"
-}
-
 if [ "$check_only" = 1 ]; then
 	report
 	exit $?
 fi
 
 mkdir -p "$BINDIR"
-
-if [ "$stems" = 1 ]; then
-	step "Separação de stems (audio-separator, ~1.5GB com o PyTorch)"
-	install_audio_separator
-	path_hint
-	exit 0
-fi
 
 step "yt-dlp"
 install_ytdlp

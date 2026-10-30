@@ -40,7 +40,7 @@ case ":$$PATH:" in *":$(BINDIR):"*) ;; \
      echo "     export PATH=\"$(BINDIR):\$$PATH\"" ;; esac
 endef
 
-.PHONY: help setup config doctor run deps deps-stems build install install-docker uninstall \
+.PHONY: help setup config doctor run deps build install install-docker uninstall \
 	fmt vet lint test test-race cover test-integration test-integration-docker check \
 	docker-build update-ytdlp release-snapshot release clean
 
@@ -68,8 +68,6 @@ doctor: build ## Verifica dependências e configuração
 deps: ## Instala yt-dlp e deno em BINDIR, e o ffmpeg pelo gestor de pacotes
 	@BINDIR="$(BINDIR)" scripts/install-deps.sh
 
-deps-stems: ## Instala o audio-separator (separação de stems) com o uv
-	@BINDIR="$(BINDIR)" scripts/install-deps.sh --stems
 
 build: ## Compila bin/dotboot com a versão embutida
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(PKG)
@@ -115,24 +113,20 @@ cover: ## Cobertura (coverage.out + total)
 	go test -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out | tail -1
 
-test-integration: ## Testes de integração no host (precisa de yt-dlp, ffmpeg, audio-separator e rede)
-	go test -tags integration -v -timeout 30m ./internal/downloader ./internal/stems
+test-integration: ## Testes de integração no host (precisa de yt-dlp, ffmpeg e rede)
+	go test -tags integration -v -timeout 30m ./internal/downloader
 
-test-integration-docker: docker-build ## Testes de integração dentro da imagem (downloads reais e separação)
+test-integration-docker: docker-build ## Testes de integração dentro da imagem (downloads reais)
 	CGO_ENABLED=0 go test -c -tags integration -o $(BIN_DIR)/downloader.test ./internal/downloader
-	CGO_ENABLED=0 go test -c -tags integration -o $(BIN_DIR)/stems.test ./internal/stems
 	docker run --rm --entrypoint /tests/downloader.test \
 		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" $(IMAGE) \
 		-test.v -test.timeout 20m $(if $(RUN),-test.run '$(RUN)')
-	docker run --rm --entrypoint /tests/stems.test \
-		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" -v dotboot-models:/models $(IMAGE) \
-		-test.v -test.timeout 30m
 
 check: lint test-race ## lint + testes com -race (o mesmo que o CI)
 
 ##@ Docker
 
-docker-build: ## Constrói a imagem com tudo (IMAGE=dotboot:latest, ~3GB)
+docker-build: ## Constrói a imagem (IMAGE=dotboot:latest)
 	$(DOCKER_BUILD) --target app -t $(IMAGE) .
 
 update-ytdlp: ## Fixa a última versão do yt-dlp no Dockerfile e reconstrói a imagem

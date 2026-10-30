@@ -43,9 +43,7 @@ type Options struct {
 
 	// CookiesFile passa --cookies: um ficheiro em formato Netscape com a
 	// sessão de um browser, que resolve a verificação "não és um robô" do
-	// YouTube, a restrição de idade e o conteúdo que exige login. O yt-dlp
-	// reescreve-o no fim, por isso processos concorrentes precisam de cópias
-	// próprias (ver copyCookies).
+	// YouTube, a restrição de idade e o conteúdo que exige login.
 	CookiesFile string
 
 	// JSRuntimes passa --js-runtimes (ex: "node"). Vazio deixa o default do

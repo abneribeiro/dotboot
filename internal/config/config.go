@@ -26,8 +26,8 @@ type Config struct {
 	// Vazio = diretório atual.
 	OutputDir string
 
-	// TempDir guarda o trabalho intermédio da separação de stems
-	// (DOTBOOT_TEMP_DIR, default os.TempDir()).
+	// TempDir guarda ficheiros temporários dos downloads (DOTBOOT_TEMP_DIR,
+	// default os.TempDir()).
 	TempDir string
 
 	// LogLevel controla a verbosidade (DOTBOOT_LOG_LEVEL: debug|info|warn|error).
@@ -43,11 +43,6 @@ type Config struct {
 	// ex: "node"). Vazio usa o default do yt-dlp, o Deno; o main preenche-o
 	// com "node" quando o Deno falta e o node existe.
 	JSRuntimes string
-
-	// ModelsDir guarda os modelos da separação de stems, descarregados na
-	// primeira utilização de cada um (DOTBOOT_MODELS_DIR, default
-	// ~/.cache/dotboot/models).
-	ModelsDir string
 }
 
 // Chaves das variáveis de ambiente, partilhadas com a TUI (Definições).
@@ -57,7 +52,6 @@ const (
 	KeyLogLevel    = "DOTBOOT_LOG_LEVEL"
 	KeyCookiesFile = "DOTBOOT_COOKIES_FILE"
 	KeyJSRuntimes  = "DOTBOOT_JS_RUNTIMES"
-	KeyModelsDir   = "DOTBOOT_MODELS_DIR"
 )
 
 // FilePath devolve o ficheiro de configuração global:
@@ -92,15 +86,11 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 		TempDir:     os.TempDir(),
 		LogLevel:    slog.LevelInfo,
 		JSRuntimes:  getenv(KeyJSRuntimes),
-		ModelsDir:   defaultModelsDir(getenv),
 		CookiesFile: getenv(KeyCookiesFile),
 	}
 
 	if v := getenv(KeyTempDir); v != "" {
 		cfg.TempDir = v
-	}
-	if v := getenv(KeyModelsDir); v != "" {
-		cfg.ModelsDir = v
 	}
 
 	if v := getenv(KeyLogLevel); v != "" {
@@ -120,7 +110,7 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 
 	// O ~ só é expandido pela shell na linha de comandos; num .env chegava
 	// aqui literal e criava uma pasta "~".
-	for _, p := range []*string{&cfg.OutputDir, &cfg.TempDir, &cfg.ModelsDir, &cfg.CookiesFile} {
+	for _, p := range []*string{&cfg.OutputDir, &cfg.TempDir, &cfg.CookiesFile} {
 		expanded, err := ExpandHome(*p, getenv)
 		if err != nil {
 			return nil, err
@@ -162,21 +152,6 @@ func ExpandHome(path string, getenv func(string) string) (string, error) {
 		}
 	}
 	return filepath.Join(home, strings.TrimPrefix(path, "~")), nil
-}
-
-// defaultModelsDir segue a convenção XDG para caches, como o resto das
-// ferramentas que descarregam modelos.
-func defaultModelsDir(getenv func(string) string) string {
-	if dir := getenv("XDG_CACHE_HOME"); dir != "" {
-		return filepath.Join(dir, "dotboot", "models")
-	}
-	if home := getenv("HOME"); home != "" {
-		return filepath.Join(home, ".cache", "dotboot", "models")
-	}
-	if dir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(dir, "dotboot", "models")
-	}
-	return filepath.Join(os.TempDir(), "dotboot-models")
 }
 
 // Save grava values (chave → valor) em path, no formato do .env. Preserva as

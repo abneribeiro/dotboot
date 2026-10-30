@@ -96,7 +96,6 @@ func collect(ctx context.Context, cfg *config.Config, sys system) []Check {
 		checkTool(ctx, sys, "ffmpeg", "ffmpeg version "),
 		checkTool(ctx, sys, "ffprobe", "ffprobe version "),
 		checkJSRuntime(ctx, cfg, sys),
-		checkStems(cfg, sys),
 		checkConfigFile(),
 		checkOutputDir(cfg),
 		checkTempDir(cfg),
@@ -175,18 +174,6 @@ func checkJSRuntime(ctx context.Context, cfg *config.Config, sys system) Check {
 	c.Level = LevelWarn
 	c.Detail = "nenhum runtime (deno ou node): o YouTube pode falhar ou ter menos formatos"
 	c.Fix = "make deps (instala o deno)"
-	return c
-}
-
-func checkStems(cfg *config.Config, sys system) Check {
-	c := Check{Name: "stems"}
-	if _, err := sys.lookPath("audio-separator"); err != nil {
-		c.Level = LevelWarn
-		c.Detail = "audio-separator não encontrado (só para `dotboot stems`)"
-		c.Fix = "make deps-stems, ou a imagem Docker: make stems-build"
-		return c
-	}
-	c.Detail = "audio-separator; modelos em " + cfg.ModelsDir
 	return c
 }
 

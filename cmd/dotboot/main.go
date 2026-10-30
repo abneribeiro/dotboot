@@ -1,12 +1,11 @@
-// dotboot — descarrega vídeos e áudio (yt-dlp) e separa músicas em pistas,
-// pelo terminal: uma TUI e subcomandos para scripts.
+// dotboot — descarrega vídeos e música (yt-dlp), pelo terminal: uma TUI e
+// subcomandos para scripts.
 //
 // Subcomandos:
 //
 //	dotboot              Abre a TUI (num terminal)
 //	dotboot tui          Abre a TUI
 //	dotboot download     Descarrega vídeos ou áudio
-//	dotboot stems        Separa uma música em pistas (vozes, baixo, guitarra…)
 //	dotboot doctor       Verifica dependências e configuração
 //	dotboot version      Mostra a versão
 package main
@@ -31,12 +30,11 @@ import (
 	"github.com/abneribeiro/dotboot/internal/tui"
 )
 
-const usageText = `dotboot — vídeos, áudio e stems no terminal (yt-dlp, ffmpeg, audio-separator)
+const usageText = `dotboot — vídeos e música no terminal (yt-dlp e ffmpeg)
 
 Uso:
   dotboot                            Abre a interface (TUI)
   dotboot download [flags] URL...    Descarrega vídeos ou áudio
-  dotboot stems [flags] URL|FICH...  Separa uma música em pistas (vozes, baixo, guitarra…)
   dotboot doctor                     Verifica dependências e configuração
   dotboot version                    Mostra a versão
   dotboot help                       Mostra esta ajuda
@@ -44,9 +42,8 @@ Uso:
 Exemplos:
   dotboot download -q 720 -o aulas "https://youtube.com/watch?v=xxxx"
   dotboot download -formato mp3 -o musica "https://youtube.com/watch?v=xxxx"
-  dotboot stems -sem guitarra ~/Musica/song.mp3
 
-A ajuda completa de cada subcomando: dotboot download -h, dotboot stems -h.
+A ajuda completa do download: dotboot download -h.
 As definições ficam em ~/.config/dotboot/config.env (editáveis na TUI).
 `
 
@@ -110,8 +107,6 @@ func main() {
 		err = tui.Run(ctx, cfg, shortVersion())
 	case "download":
 		err = runDownload(ctx, cfg, logger, args)
-	case "stems":
-		err = runStems(ctx, cfg, logger, args)
 	case "doctor":
 		err = doctor.Run(ctx, cfg, os.Stdout)
 	default:
@@ -148,15 +143,6 @@ func runDownload(ctx context.Context, cfg *config.Config, logger *slog.Logger, a
 	}
 	configureJSRuntime(cfg, logger)
 	return cli.Run(ctx, args, cfg, logger)
-}
-
-func runStems(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
-	// O yt-dlp só é preciso para URLs, e o cli.RunStems verifica-o nesse caso.
-	if err := checkBinaries(args, "ffmpeg", "audio-separator"); err != nil {
-		return fmt.Errorf("%w — a separação de stems instala-se com `make deps-stems`, ou usa a imagem Docker (make stems-build)", err)
-	}
-	configureJSRuntime(cfg, logger)
-	return cli.RunStems(ctx, args, cfg, logger)
 }
 
 // checkBinaries garante que as dependências externas estão no PATH. Um
