@@ -44,7 +44,7 @@ if [ -z "$cli" ]; then
 	fi
 	cli=$default
 	if [ "$interactive" = 1 ]; then
-		echo "  1) docker  tudo numa imagem (~300MB); nada instalado no sistema"
+		echo "  1) docker  tudo numa imagem (~1GB); nada instalado no sistema"
 		echo "  2) native  binário em $BINDIR + yt-dlp, deno e ffmpeg no sistema (precisa de Go)"
 		read -r -p "Como queres instalar? [$default] " answer
 		case "${answer:-$default}" in

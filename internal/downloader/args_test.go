@@ -89,7 +89,7 @@ func TestBuildArgsCLIModeMP4(t *testing.T) {
 	})
 
 	want := []string{
-		"-S", "res,vcodec:h264,acodec:aac",
+		"-S", "res,hdr:sdr,vcodec:h264,acodec:aac",
 		"--merge-output-format", "mp4",
 		"-o", "/videos/%(title)s [%(id)s].%(ext)s",
 		"--continue",
@@ -199,8 +199,8 @@ func TestMP4Sort(t *testing.T) {
 		resSort string
 		want    string
 	}{
-		{"sem limite pede a maior resolução", "", "res,vcodec:h264,acodec:aac"},
-		{"com limite", "res:720", "res:720,vcodec:h264,acodec:aac"},
+		{"sem limite pede a maior resolução", "", "res,hdr:sdr,vcodec:h264,acodec:aac"},
+		{"com limite", "res:720", "res:720,hdr:sdr,vcodec:h264,acodec:aac"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

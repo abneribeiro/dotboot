@@ -33,7 +33,61 @@ func assertPlayableOnPhones(t *testing.T, ctx context.Context, path string) {
 		t.Errorf("%s não é reproduzível num telemóvel: ext=%s vcodec=%s acodec=%s pix_fmt=%s",
 			filepath.Base(path), filepath.Ext(path), vcodec, acodec, pixFmt)
 	}
+	// Com o índice (moov) depois dos dados, o iPhone só começa a mostrar o
+	// vídeo depois de o ler todo (ao pré-visualizar ou partilhar).
+	if fast, err := moovFirst(path); err != nil || !fast {
+		t.Errorf("%s: o moov vem depois do mdat (falta o +faststart)", filepath.Base(path))
+	}
 	t.Logf("codecs: %s / %s (%s)", vcodec, acodec, pixFmt)
+}
+
+// TestEnsureMP4MoveOIndice: um MP4 H.264/AAC com o índice no fim (como os
+// recortes, que o yt-dlp recodifica) tem os codecs certos, mas só começa a
+// tocar no iPhone depois de lido todo. O EnsureMP4 faz um remux sem perdas.
+func TestEnsureMP4MoveOIndice(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	source := filepath.Join(t.TempDir(), "sem-faststart.mp4")
+	makeTestVideo(t, ctx, source, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac")
+	if fast, err := moovFirst(source); err != nil || fast {
+		t.Fatalf("o ffmpeg sem +faststart devia pôr o índice no fim (fast=%v, %v)", fast, err)
+	}
+
+	var reencode = true
+	got, err := EnsureMP4(ctx, source, ConvertHooks{Start: func(r bool, _ string) { reencode = r }})
+	if err != nil {
+		t.Fatalf("EnsureMP4 falhou: %v", err)
+	}
+	if got != source || reencode {
+		t.Errorf("devia ser um remux no próprio ficheiro: %s (recodificou: %v)", got, reencode)
+	}
+	assertPlayableOnPhones(t, ctx, got)
+}
+
+// TestEnsureMP4DimensoesImpares: o libx264 com yuv420p recusa larguras e
+// alturas ímpares, que aparecem em vídeos cortados à mão (TikTok,
+// Instagram). A conversão tem de as arredondar em vez de falhar.
+func TestEnsureMP4DimensoesImpares(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	source := filepath.Join(t.TempDir(), "impar.webm")
+	makeTestVideo(t, ctx, source, "-vf", "scale=321:241", "-c:v", "libvpx-vp9", "-b:v", "300k", "-c:a", "libopus")
+
+	got, err := EnsureMP4(ctx, source, ConvertHooks{})
+	if err != nil {
+		t.Fatalf("EnsureMP4 falhou com dimensões ímpares: %v", err)
+	}
+	assertPlayableOnPhones(t, ctx, got)
+	size, err := probe(ctx, "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height,profile", "-of", "csv=p=0", got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != "High,320,240" && size != "320,240,High" {
+		t.Errorf("perfil e dimensões = %q, esperado High a 320x240", size)
+	}
 }
 
 // makeTestVideo gera localmente um ficheiro com os codecs pedidos. É preferível

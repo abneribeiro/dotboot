@@ -109,10 +109,13 @@ func QualitySort(q string) (string, error) {
 	return fmt.Sprintf("res:%d", n), nil
 }
 
-// mp4CodecSort faz o yt-dlp preferir H.264 + AAC — o único par que iPhones e
-// Androids reproduzem nativamente. São os mesmos campos do preset oficial
-// "-t mp4" do yt-dlp.
-const mp4CodecSort = "vcodec:h264,acodec:aac"
+// mp4CodecSort faz o yt-dlp preferir SDR e H.264 + AAC — o único par que
+// iPhones e Androids reproduzem nativamente. O vcodec e o acodec são os
+// campos do preset oficial "-t mp4" do yt-dlp. O hdr:sdr vem primeiro
+// porque o yt-dlp, por omissão, prefere HDR (hdr:12): um VP9 HDR convertido
+// para H.264 de 8 bits fica com as cores lavadas, sem a informação de HDR
+// que o leitor precisava para as mostrar.
+const mp4CodecSort = "hdr:sdr,vcodec:h264,acodec:aac"
 
 // MP4Sort junta a preferência de codecs a uma ordenação de resolução.
 // resSort vazio significa "a maior resolução disponível".

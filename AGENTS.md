@@ -32,7 +32,7 @@ make build            # bin/dotboot with version ldflags
 make install          # Native binary into ~/.local/bin (PREFIX=… to change)
 make install-docker   # Docker wrapper (scripts/dotboot-docker) as `dotboot`
 make deps             # yt-dlp + deno (checksum-verified) and ffmpeg on the host
-make docker-build     # The image dotboot:latest (~300MB)
+make docker-build     # The image dotboot:latest (~1GB, mostly ffmpeg)
 make config           # Edit ~/.config/dotboot/config.env
 make update-ytdlp     # Pin the latest yt-dlp in the Dockerfile and rebuild
 make release-snapshot # GoReleaser in Docker, all platforms into dist/
@@ -113,12 +113,17 @@ Key invariants to preserve:
   `ParseLine` reads (template lines never reach the log). ffmpeg runs with
   `-progress pipe:1` (`FFmpegFraction`). `procio.LineWriter` splits on `\r`
   too: ffmpeg rewrites one line with carriage returns.
-- **Output is always MP4 / H.264 8-bit / AAC** (video mode): `MP4Sort` asks
-  yt-dlp to prefer those codecs (resolution must outrank `vcodec` in `-S`, or
-  `-q 2160` would be ignored), and `EnsureMP4` probes and fixes what landed
-  (above 1080p YouTube has no H.264). Every re-encode carries
-  `-pix_fmt yuv420p`: a 10-bit source would otherwise become H.264 High10,
-  which iPhones cannot play.
+- **Output is always MP4 / H.264 8-bit / AAC, with faststart** (video mode):
+  `MP4Sort` asks yt-dlp for SDR and those codecs (`res,hdr:sdr,vcodec:h264,
+  acodec:aac`; resolution must outrank `vcodec`, or `-q 2160` would be
+  ignored; yt-dlp prefers HDR by default, and HDR squeezed into 8-bit H.264
+  looks washed out). `EnsureMP4` probes and fixes what landed (above 1080p
+  YouTube has no H.264). Every re-encode carries `-pix_fmt yuv420p` (a 10-bit
+  source would become H.264 High10, which iPhones cannot play), `-profile:v
+  high` and an even-dimensions scale (libx264 rejects odd sizes in 4:2:0).
+  A compatible MP4 whose `moov` box sits after `mdat` (`moovFirst`) gets a
+  lossless `+faststart` remux: trims are re-encoded by yt-dlp itself
+  (`--force-keyframes-at-cuts`) without it.
 - **Resolution means the SHORT side**: `-q N` is only `-S res:N` (a cap with
   fallback), never an `-f [height<=N]` filter, which turned a vertical
   720x1280 Short into 360x640.
@@ -204,7 +209,7 @@ root of a relative `-o`; an absolute `-o` ignores it.
 
 ## Docker
 
-One image, `dotboot:latest` (target `app`, ~300MB). Base images are written
+One image, `dotboot:latest` (target `app`, ~1GB, mostly ffmpeg's libraries). Base images are written
 literally in the `FROM` lines so Dependabot can bump them.
 
 | Stage        | Purpose |

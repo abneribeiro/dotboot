@@ -103,7 +103,7 @@ func newVideoForm(v *videoValues, base string) *huh.Form {
 				huh.NewOption("480p", "480"),
 			).Value(&v.quality),
 			huh.NewSelect[string]().Title("Formato").Options(
-				huh.NewOption("MP4 — toca no iPhone, Android e Discord", jobs.FormatMP4),
+				huh.NewOption("MP4 — toca no iPhone, Android, Windows e Mac", jobs.FormatMP4),
 				huh.NewOption("Original — tal como o site serve (.webm/.mkv)", jobs.FormatOriginal),
 			).Value(&v.format),
 			huh.NewInput().Title("Pasta de saída").Description(outputDescription(base)).Value(&v.output),
