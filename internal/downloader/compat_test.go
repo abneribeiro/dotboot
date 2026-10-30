@@ -1,6 +1,8 @@
 package downloader
 
 import (
+	"bytes"
+	"encoding/binary"
 	"slices"
 	"strings"
 	"testing"
@@ -92,12 +94,22 @@ func TestCompatArgsRecodificaSoOFluxoErrado(t *testing.T) {
 			if tt.wantPixFmt && argValue(got, "-pix_fmt") != mp4PixFmt {
 				t.Errorf("-pix_fmt = %q, esperado %q", argValue(got, "-pix_fmt"), mp4PixFmt)
 			}
+			// Ao recodificar, as dimensões ficam pares (o libx264 recusa as
+			// ímpares em yuv420p) e o perfil é o High, que todos os leitores
+			// descodificam. Num remux nada disto se aplica.
+			reencode := tt.wantVideo == "libx264"
+			if (argValue(got, "-vf") == evenDimensions) != reencode {
+				t.Errorf("-vf = %q, recodifica = %v: %v", argValue(got, "-vf"), reencode, got)
+			}
+			if (argValue(got, "-profile:v") == compatProfile) != reencode {
+				t.Errorf("-profile:v = %q, recodifica = %v", argValue(got, "-profile:v"), reencode)
+			}
 		})
 	}
 }
 
 // O +faststart é o que deixa o vídeo começar a tocar antes de estar todo
-// transferido — no Discord e no Safari é a diferença entre ver e esperar.
+// transferido — no iPhone e no Safari é a diferença entre ver e esperar.
 func TestCompatArgsIncluiSempreFaststart(t *testing.T) {
 	for _, vcodec := range []string{"h264", "av1", "vp9"} {
 		got := compatArgs("/tmp/in", "/tmp/out.mp4", vcodec, "aac", "yuv420p")
@@ -140,5 +152,41 @@ func TestMP4CompatibleIgnoraCaixaDaExtensao(t *testing.T) {
 	}
 	if mp4Compatible(strings.ToUpper(".webm"), "h264", "aac", "yuv420p") {
 		t.Error(".WEBM não é mp4")
+	}
+}
+
+// box escreve uma caixa MP4 com o tipo e o conteúdo dados.
+func box(typ string, payload int) []byte {
+	b := make([]byte, 8+payload)
+	binary.BigEndian.PutUint32(b, uint32(8+payload))
+	copy(b[4:8], typ)
+	return b
+}
+
+func TestMoovFirst(t *testing.T) {
+	large := make([]byte, 16) // mdat com tamanho de 64 bits
+	binary.BigEndian.PutUint32(large, 1)
+	copy(large[4:8], "mdat")
+	binary.BigEndian.PutUint64(large[8:], 16)
+
+	tests := []struct {
+		name    string
+		file    [][]byte
+		want    bool
+		wantErr bool
+	}{
+		{"faststart", [][]byte{box("ftyp", 24), box("moov", 100), box("mdat", 500)}, true, false},
+		{"índice no fim", [][]byte{box("ftyp", 24), box("free", 0), box("mdat", 500), box("moov", 100)}, false, false},
+		{"mdat de 64 bits", [][]byte{box("ftyp", 24), large, box("moov", 10)}, false, false},
+		{"sem moov nem mdat", [][]byte{box("ftyp", 24)}, false, true},
+		{"caixa inválida", [][]byte{box("ftyp", 24), {0, 0, 0, 2, 'x', 'x', 'x', 'x'}}, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := moovFirstIn(bytes.NewReader(bytes.Join(tt.file, nil)))
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Errorf("moovFirstIn = %v, %v; quero %v (erro: %v)", got, err, tt.want, tt.wantErr)
+			}
+		})
 	}
 }

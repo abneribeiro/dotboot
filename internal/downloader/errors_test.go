@@ -99,8 +99,8 @@ func TestDownloadErrorDetail(t *testing.T) {
 	}
 }
 
-// Cortar por bytes podia partir um carácter acentuado a meio e mandar UTF-8
-// inválido para o Discord.
+// Cortar por bytes podia partir um carácter acentuado a meio e mostrar UTF-8
+// inválido no terminal.
 func TestTruncateRunesNaoPartePalavrasAcentuadas(t *testing.T) {
 	got := truncateRunes(strings.Repeat("ã", 10), 5)
 	if got != "ãããã…" {

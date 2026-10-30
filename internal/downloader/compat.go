@@ -2,7 +2,9 @@ package downloader
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -13,9 +15,9 @@ import (
 	"github.com/abneribeiro/dotboot/internal/procio"
 )
 
-// O par que qualquer iPhone, iPad ou Android reproduz nativamente, e o único
-// que o Discord consegue mostrar inline em todas as plataformas. Tudo o que
-// saia deste pacote passa por aqui antes de chegar ao utilizador.
+// O par que qualquer iPhone, iPad, Android, Windows e macOS reproduz
+// nativamente, sem apps extra. Tudo o que saia deste pacote passa por aqui
+// antes de chegar ao utilizador.
 const (
 	mp4Ext        = ".mp4"
 	mp4VideoCodec = "h264"
@@ -26,14 +28,24 @@ const (
 	// o ficheiro teria os codecs certos e continuaria a não abrir.
 	mp4PixFmt = "yuv420p"
 
-	// compatCRF é qualidade-alvo, não tamanho-alvo: ao contrário da
-	// compressão para o Discord (compress.go), aqui não há orçamento de
+	// compatCRF é qualidade-alvo, não tamanho-alvo: não há orçamento de
 	// bytes, só o dever de não estragar o vídeo ao converter.
 	compatCRF = "20"
 
 	// compatPreset privilegia a velocidade: a qualidade vem do CRF, e o
 	// preset só decide quanto tempo se gasta a lá chegar.
 	compatPreset = "veryfast"
+
+	// compatProfile fixa o perfil High: o que qualquer iPhone, Android,
+	// Windows ou macOS descodifica em hardware. Sem ele, o libx264 escolhe o
+	// perfil a partir das opções, e uma combinação estranha podia sair
+	// noutro.
+	compatProfile = "high"
+
+	// evenDimensions arredonda a largura e a altura para números pares: o
+	// libx264 com yuv420p recusa dimensões ímpares, que aparecem em vídeos
+	// cortados à mão (TikTok, Instagram), e a conversão falhava.
+	evenDimensions = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
 
 	// compatAudioKbps é generoso de propósito: o áudio é uma fração do
 	// ficheiro e recodificar Opus→AAC já custa uma geração de qualidade.
@@ -80,9 +92,11 @@ func compatArgs(inputPath, outputPath, vcodec, acodec, pixFmt string) []string {
 		args = append(args, "-c:v", "copy")
 	} else {
 		args = append(args,
+			"-vf", evenDimensions,
 			"-c:v", "libx264",
 			"-crf", compatCRF,
 			"-preset", compatPreset,
+			"-profile:v", compatProfile,
 			"-pix_fmt", mp4PixFmt,
 		)
 	}
@@ -96,6 +110,47 @@ func compatArgs(inputPath, outputPath, vcodec, acodec, pixFmt string) []string {
 	// +faststart move o índice para o início: é o que permite a um iPhone
 	// começar a ver antes de ter o ficheiro todo.
 	return append(args, "-movflags", "+faststart", "-y", outputPath)
+}
+
+// moovFirst reporta se o índice de um MP4 (a caixa moov) vem antes dos dados
+// (mdat) — o que o +faststart garante e o que deixa o iPhone mostrar o vídeo
+// sem o ler todo primeiro (ao pré-visualizar, partilhar ou ver na rede). Lê
+// só os cabeçalhos das caixas de topo.
+func moovFirst(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	return moovFirstIn(f)
+}
+
+// moovFirstIn é o moovFirst sobre um io.ReaderAt, para os testes.
+func moovFirstIn(r io.ReaderAt) (bool, error) {
+	var offset int64
+	header := make([]byte, 16)
+	for {
+		if _, err := r.ReadAt(header[:8], offset); err != nil {
+			return false, fmt.Errorf("MP4 sem moov nem mdat: %w", err)
+		}
+		size := int64(binary.BigEndian.Uint32(header[:4]))
+		switch string(header[4:8]) {
+		case "moov":
+			return true, nil
+		case "mdat":
+			return false, nil
+		}
+		if size == 1 { // tamanho de 64 bits a seguir ao tipo
+			if _, err := r.ReadAt(header[8:16], offset+8); err != nil {
+				return false, err
+			}
+			size = int64(binary.BigEndian.Uint64(header[8:16]))
+		}
+		if size < 8 {
+			return false, fmt.Errorf("caixa MP4 inválida em %d", offset)
+		}
+		offset += size
+	}
 }
 
 // probeStreams devolve o codec de vídeo, o codec de áudio e o pixel format do
@@ -151,8 +206,15 @@ func EnsureMP4(ctx context.Context, path string, hooks ConvertHooks) (string, er
 
 	ext := filepath.Ext(path)
 	if mp4Compatible(ext, vcodec, acodec, pixFmt) {
-		slog.Debug("ficheiro já é MP4 compatível", "path", path, "vcodec", vcodec, "acodec", acodec)
-		return path, nil
+		// Os codecs estão certos, mas o índice pode estar no fim: acontece
+		// com os recortes, que o próprio yt-dlp recodifica para H.264. Nesse
+		// caso faz-se um remux só para o mover para o início.
+		fast, err := moovFirst(path)
+		if err != nil || fast {
+			slog.Debug("ficheiro já é MP4 compatível", "path", path, "vcodec", vcodec, "acodec", acodec)
+			return path, nil
+		}
+		slog.Debug("MP4 compatível com o índice no fim: remux com +faststart", "path", path)
 	}
 
 	reencoding := !videoCompatible(vcodec, pixFmt)

@@ -56,7 +56,7 @@ e no fim corre o diagnóstico. Há duas formas:
 |---|---|---|
 | Comando | `make docker-build && make install-docker` | `make deps && make install` |
 | Precisa de | Docker | Go 1.26+ (o `make deps` instala yt-dlp, deno e ffmpeg) |
-| Espaço | ~300MB | o binário + yt-dlp, deno e ffmpeg |
+| Espaço | ~1GB (sobretudo o ffmpeg) | o binário + yt-dlp, deno e ffmpeg |
 
 As duas instalam o comando `dotboot` em `~/.local/bin` (muda com
 `make install PREFIX=/usr/local`). Se o comando não for encontrado,
@@ -136,10 +136,17 @@ dotboot doctor
 O yt-dlp prefere AV1/VP9 + Opus, que dão `.webm`/`.mkv` — ficheiros que o
 iPhone não abre. O dotboot garante MP4 com H.264 + AAC em duas camadas:
 
-1. **Pede os codecs certos** ao yt-dlp. No YouTube até 1080p, no Instagram, no
-   TikTok e no X isto resolve tudo, **sem recodificar**.
+1. **Pede os codecs certos** ao yt-dlp: H.264 + AAC e a versão SDR (uma versão
+   HDR convertida para H.264 ficaria com as cores lavadas). No YouTube até
+   1080p, no Instagram, no TikTok e no X isto resolve tudo, **sem recodificar**.
 2. **Verifica o que chegou** e corrige: acima de 1080p o YouTube só tem
-   VP9/AV1, e aí o vídeo é recodificado (demora, e o dotboot avisa).
+   VP9/AV1, e aí o vídeo é recodificado (demora, e o dotboot avisa) para
+   H.264 High, 8 bits 4:2:0, com dimensões pares. Todos os MP4 saem com o
+   índice no início (*faststart*), para o iPhone os mostrar logo, sem ler o
+   ficheiro todo.
+
+O resultado abre no iPhone (Fotos, Ficheiros, WhatsApp), no Android, no
+Windows e no macOS sem nenhuma app extra.
 
 > **Dica**: 1080p é o ponto doce no YouTube — a maior resolução sem
 > recodificação. Para guardar o ficheiro tal como vem, escolhe o formato
