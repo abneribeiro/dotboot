@@ -1,12 +1,13 @@
 // Package doctor verifica se o ambiente tem o que o dotboot precisa e diz
-// como resolver o que falta. A página mostra-o em Definições, e é o primeiro
-// sítio a ver quando um download falha sem razão aparente.
+// como resolver o que falta. É o último passo do `make setup`, e o primeiro
+// a correr quando um download falha sem razão aparente.
 package doctor
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -16,7 +17,9 @@ import (
 	"github.com/abneribeiro/dotboot/internal/config"
 )
 
-// Level é a gravidade de uma verificação.
+// ErrProblems sinaliza que falta algo essencial. O relatório já foi escrito.
+var ErrProblems = errors.New("o ambiente tem problemas")
+
 type Level int
 
 const (
@@ -25,25 +28,13 @@ const (
 	LevelFail
 )
 
-// MarshalJSON escreve o nível como "ok", "warn" ou "fail" para a página.
-func (l Level) MarshalJSON() ([]byte, error) {
-	switch l {
-	case LevelWarn:
-		return []byte(`"warn"`), nil
-	case LevelFail:
-		return []byte(`"fail"`), nil
-	default:
-		return []byte(`"ok"`), nil
-	}
-}
-
-// Check é uma linha do relatório.
+// check é uma linha do relatório.
 type Check struct {
-	Name   string `json:"name"`
-	Level  Level  `json:"level"`
-	Detail string `json:"detail"`
+	Name   string
+	Level  Level
+	Detail string
 	// Fix diz como resolver; vazio quando está tudo bem.
-	Fix string `json:"fix,omitempty"`
+	Fix string
 }
 
 const (
@@ -63,7 +54,21 @@ type system struct {
 	now      time.Time
 }
 
-// Collect faz as verificações e devolve-as.
+// Run verifica o ambiente e escreve o relatório em w. Devolve ErrProblems
+// quando falta algo sem o qual o dotboot não consegue descarregar.
+func Run(ctx context.Context, cfg *config.Config, w io.Writer) error {
+	checks := Collect(ctx, cfg)
+	render(w, checks)
+	for _, c := range checks {
+		if c.Level == LevelFail {
+			return ErrProblems
+		}
+	}
+	return nil
+}
+
+// Collect faz as verificações e devolve-as, para quem as queira mostrar à
+// sua maneira (a TUI).
 func Collect(ctx context.Context, cfg *config.Config) []Check {
 	return collect(ctx, cfg, system{lookPath: exec.LookPath, output: commandOutput, now: time.Now()})
 }
@@ -93,7 +98,7 @@ func collect(ctx context.Context, cfg *config.Config, sys system) []Check {
 		checkJSRuntime(ctx, cfg, sys),
 		checkStems(cfg, sys),
 		checkConfigFile(),
-		checkDataDir(cfg),
+		checkOutputDir(cfg),
 		checkTempDir(cfg),
 	}
 	if cfg.CookiesFile != "" {
@@ -177,37 +182,48 @@ func checkStems(cfg *config.Config, sys system) Check {
 	c := Check{Name: "stems"}
 	if _, err := sys.lookPath("audio-separator"); err != nil {
 		c.Level = LevelWarn
-		c.Detail = "audio-separator não encontrado (só para separar músicas)"
-		c.Fix = "make deps-stems, ou a imagem Docker: make docker-build"
+		c.Detail = "audio-separator não encontrado (só para `dotboot stems`)"
+		c.Fix = "make deps-stems, ou a imagem Docker: make stems-build"
 		return c
 	}
 	c.Detail = "audio-separator; modelos em " + cfg.ModelsDir
 	return c
 }
 
-// checkConfigFile mostra onde se podem fixar as variáveis do dotboot.
+// checkConfigFile mostra onde ficam as definições gravadas pela TUI.
 func checkConfigFile() Check {
 	path := config.FilePath()
 	c := Check{Name: "definições", Detail: path}
 	if _, err := os.Stat(path); err != nil {
-		c.Detail += " (opcional; os valores por omissão chegam)"
+		c.Detail += " (ainda não existe; os valores por omissão chegam)"
 	}
 	return c
 }
 
-// checkDataDir confirma a pasta onde ficam as separações e os downloads.
-func checkDataDir(cfg *config.Config) Check {
-	c := Check{Name: "dados", Detail: cfg.DataDir}
-	info, err := os.Stat(cfg.DataDir)
+func checkOutputDir(cfg *config.Config) Check {
+	c := Check{Name: "saída"}
+	dir := cfg.OutputDir
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			c.Level, c.Detail = LevelWarn, "não foi possível determinar o diretório atual"
+			return c
+		}
+		dir = wd
+	}
+	c.Detail = dir
+
+	info, err := os.Stat(dir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		c.Detail += " (é criada no primeiro trabalho)"
+		c.Detail += " (é criada no primeiro download)"
 	case err != nil:
-		c.Level, c.Fix = LevelFail, err.Error()
+		c.Level, c.Fix = LevelWarn, err.Error()
 	case !info.IsDir():
-		c.Level, c.Fix = LevelFail, "DOTBOOT_DATA_DIR aponta para um ficheiro"
-	case !writable(cfg.DataDir):
-		c.Level, c.Fix = LevelFail, "sem permissão de escrita em DOTBOOT_DATA_DIR"
+		c.Level, c.Fix = LevelFail, "DOTBOOT_OUTPUT_DIR aponta para um ficheiro"
+	case !writable(dir):
+		// Só o modo CLI escreve aqui, e -o pode apontar para outro sítio.
+		c.Level, c.Fix = LevelWarn, "sem permissão de escrita: define DOTBOOT_OUTPUT_DIR ou usa -o"
 	}
 	return c
 }
@@ -289,4 +305,38 @@ func versionAfter(out, prefix string) string {
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
 	return strings.TrimSpace(line)
+}
+
+// render escreve o relatório: uma linha por verificação, com a solução por
+// baixo quando há uma, e um resumo no fim.
+func render(w io.Writer, checks []Check) {
+	fmt.Fprintln(w, "dotboot doctor")
+	fmt.Fprintln(w)
+
+	var warnings, failures int
+	for _, c := range checks {
+		icon := "✅"
+		switch c.Level {
+		case LevelWarn:
+			icon = "⚠️ "
+			warnings++
+		case LevelFail:
+			icon = "❌"
+			failures++
+		}
+		fmt.Fprintf(w, "  %s %-12s %s\n", icon, c.Name, c.Detail)
+		if c.Fix != "" {
+			fmt.Fprintf(w, "     %-12s → %s\n", "", c.Fix)
+		}
+	}
+
+	fmt.Fprintln(w)
+	switch {
+	case failures > 0:
+		fmt.Fprintf(w, "%d problema(s) por resolver.\n", failures)
+	case warnings > 0:
+		fmt.Fprintf(w, "Pronto a usar (%d aviso(s)).\n", warnings)
+	default:
+		fmt.Fprintln(w, "Tudo pronto.")
+	}
 }

@@ -20,13 +20,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      # A página compilada é embutida no binário de cada plataforma.
-      - run: make web
       - run: go test ./...
       - uses: goreleaser/goreleaser-action@v7
         with:

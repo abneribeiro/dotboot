@@ -8,9 +8,6 @@ project_name: dotboot
 before:
   hooks:
     - go mod verify
-    # A página tem de estar compilada (make web) para o binário a embutir;
-    # sem ela o dotboot arranca, mas só mostra um aviso.
-    - test -f internal/web/dist/app/200.html
 
 builds:
   - id: dotboot

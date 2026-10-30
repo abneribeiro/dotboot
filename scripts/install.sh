@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Instala a última release do dotboot (o binário, com a página embutida) sem
-# clonar o repo.
+# Instala a última release do dotboot (o binário da CLI/bot) sem clonar o repo.
 #
 # Com o repo privado, através do gh autenticado (gh auth login):
 #   gh api repos/abneribeiro/dotboot/contents/scripts/install.sh \
@@ -96,5 +95,4 @@ if [ "$want_deps" = 1 ]; then
 	BINDIR=$BINDIR bash "$tmp/scripts/install-deps.sh" </dev/tty
 fi
 
-echo
-echo "Pronto. Arranca com: dotboot   (abre a página no browser; Definições → Diagnóstico diz o que falta)"
+"$BINDIR/dotboot" doctor || true

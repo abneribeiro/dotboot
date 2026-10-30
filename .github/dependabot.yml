@@ -1,5 +1,5 @@
-# Mantém atualizadas as dependências Go e npm (a página), as actions e as
-# imagens base do Dockerfile. O yt-dlp, por ser um binário descarregado, atualiza-se com
+# Mantém atualizadas as dependências Go, as actions e as imagens base do
+# Dockerfile. O yt-dlp, por ser um binário descarregado, atualiza-se com
 # `make update-ytdlp`.
 version: 2
 updates:
@@ -7,15 +7,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-
-  - package-ecosystem: npm
-    directory: /web
-    schedule:
-      interval: weekly
-    groups:
-      # O SvelteKit, o Vite e o Tailwind sobem juntos ou partem juntos.
-      frontend:
-        patterns: ["*"]
 
   - package-ecosystem: github-actions
     directory: /

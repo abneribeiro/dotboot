@@ -1,11 +1,13 @@
-// Package jobs é o motor do dotboot: valida um pedido (descarregar vídeo,
-// extrair áudio, separar stems), executa-o e relata o progresso por eventos.
-// Não conhece a web — quem chama decide como mostrar cada Event.
+// Package jobs é o motor partilhado pelo CLI e pela TUI: valida um pedido
+// (descarregar vídeo, extrair áudio, separar stems), executa-o e relata o
+// progresso por eventos. Não escreve no terminal — quem chama decide como
+// mostrar cada Event.
 package jobs
 
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"time"
@@ -28,7 +30,7 @@ const (
 	StageExtract  Stage = "a extrair o áudio"
 	StageConvert  Stage = "a converter para MP4"
 	StageSeparate Stage = "a separar as pistas"
-	StageExport   Stage = "a preparar o estúdio"
+	StageExport   Stage = "a exportar"
 )
 
 // Event é uma atualização de um trabalho. Os campos vazios não mudam o que
@@ -58,16 +60,15 @@ type Reporter func(Event)
 
 // Result descreve o que um trabalho produziu.
 type Result struct {
-	// OutputDir é a pasta onde ficaram os ficheiros.
+	// OutputDir é a pasta de saída (para os stems, a pasta-base).
 	OutputDir string
 	// Files são os ficheiros finais criados ou atualizados.
 	Files []string
-	// Title é o nome da música separada (vazio nos downloads).
-	Title string
 }
 
 // Env é o que os trabalhos precisam da configuração.
 type Env struct {
+	OutputBase  string // DOTBOOT_OUTPUT_DIR: base de -o relativos
 	TempDir     string
 	ModelsDir   string
 	JSRuntimes  string
@@ -77,6 +78,7 @@ type Env struct {
 // EnvFrom extrai o Env de uma configuração carregada.
 func EnvFrom(cfg *config.Config) Env {
 	return Env{
+		OutputBase:  cfg.OutputDir,
 		TempDir:     cfg.TempDir,
 		ModelsDir:   cfg.ModelsDir,
 		JSRuntimes:  cfg.JSRuntimes,
@@ -108,17 +110,28 @@ func FormatETA(d time.Duration) string {
 }
 
 // PrepareOutputDir cria a pasta de saída e confirma que se pode escrever
-// nela. Corre antes do trabalho: sem isto, uma pasta só de leitura só falhava
-// no fim, depois de minutos de download e de separação.
+// nela. Corre antes do trabalho: sem isto, uma pasta só de leitura (ex: "/")
+// só falhava no fim, depois de minutos de download e de separação.
 func PrepareOutputDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("não é possível gravar em %s: %w", dir, err)
+		return outputDirError(dir, err)
 	}
 	f, err := os.CreateTemp(dir, ".dotboot-teste-*")
 	if err != nil {
-		return fmt.Errorf("não é possível gravar em %s: %w", dir, err)
+		return outputDirError(dir, err)
 	}
 	f.Close()
 	_ = os.Remove(f.Name()) // um ficheiro vazio esquecido não faz mal
 	return nil
+}
+
+// outputDirError explica a falha. Dentro do Docker (a imagem define
+// DOTBOOT_DOCKER) só se veem as pastas que o wrapper montou ao arrancar.
+func outputDirError(dir string, err error) error {
+	if os.Getenv("DOTBOOT_DOCKER") != "" && (errors.Is(err, fs.ErrPermission) || errors.Is(err, fs.ErrNotExist)) {
+		return fmt.Errorf("não é possível gravar em %s: %w (no Docker só estão acessíveis a tua home, "+
+			"os discos do Windows em /mnt e as pastas das definições com que o dotboot arrancou; "+
+			"depois de mudar as Definições, fecha e volta a abrir o dotboot)", dir, err)
+	}
+	return fmt.Errorf("não é possível gravar em %s: %w", dir, err)
 }
