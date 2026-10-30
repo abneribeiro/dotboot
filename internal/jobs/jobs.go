@@ -7,7 +7,9 @@ package jobs
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
+	"os"
 	"time"
 
 	"github.com/abneribeiro/dotboot/internal/config"
@@ -105,4 +107,31 @@ func FormatETA(d time.Duration) string {
 		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
 	}
 	return fmt.Sprintf("%d:%02d", s/60, s%60)
+}
+
+// PrepareOutputDir cria a pasta de saída e confirma que se pode escrever
+// nela. Corre antes do trabalho: sem isto, uma pasta só de leitura (ex: "/")
+// só falhava no fim, depois de minutos de download e de separação.
+func PrepareOutputDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return outputDirError(dir, err)
+	}
+	f, err := os.CreateTemp(dir, ".dotboot-teste-*")
+	if err != nil {
+		return outputDirError(dir, err)
+	}
+	f.Close()
+	_ = os.Remove(f.Name()) // um ficheiro vazio esquecido não faz mal
+	return nil
+}
+
+// outputDirError explica a falha. Dentro do Docker (a imagem define
+// DOTBOOT_DOCKER) só se veem as pastas que o wrapper montou ao arrancar.
+func outputDirError(dir string, err error) error {
+	if os.Getenv("DOTBOOT_DOCKER") != "" && (errors.Is(err, fs.ErrPermission) || errors.Is(err, fs.ErrNotExist)) {
+		return fmt.Errorf("não é possível gravar em %s: %w (no Docker só estão acessíveis a tua home, "+
+			"os discos do Windows em /mnt e as pastas das definições com que o dotboot arrancou; "+
+			"depois de mudar as Definições, fecha e volta a abrir o dotboot)", dir, err)
+	}
+	return fmt.Errorf("não é possível gravar em %s: %w", dir, err)
 }

@@ -230,7 +230,12 @@ literally in the `FROM` lines so Dependabot can bump them.
 mounted at the same path (so `~`, absolute paths, `~/.config/dotboot` and
 the TUI file picker behave like the native install), the `dotboot-models`
 volume, `-it` when there is a terminal, and same-path mounts for absolute
-paths outside the home.
+paths outside the home — including the output/cookies paths read from the
+environment, `./.env` or `config.env` (same priority as the binary) and, on
+WSL, every `/mnt/<drive>`. The image sets `DOTBOOT_DOCKER=1` so
+`jobs.PrepareOutputDir` can explain an unreachable folder. Jobs check that
+the output folder is writable before starting (`PrepareOutputDir`), never
+after minutes of work.
 
 ## Releases & CI
 

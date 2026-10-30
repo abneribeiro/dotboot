@@ -284,8 +284,8 @@ func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, e
 	res := Result{OutputDir: d.OutputDir}
 	sink := &reporterSink{report: report}
 
-	if err := os.MkdirAll(d.OutputDir, 0o755); err != nil {
-		return res, fmt.Errorf("não foi possível criar a pasta %s: %w", d.OutputDir, err)
+	if err := PrepareOutputDir(d.OutputDir); err != nil {
+		return res, err
 	}
 	cookies := d.Cookies
 	if cookies == "" {

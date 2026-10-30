@@ -130,7 +130,8 @@ COPY --from=builder /dotboot /dotboot
 # um volume novo herda as permissões deste diretório.
 RUN useradd --system --uid 10001 --create-home --home-dir /home/dotboot dotboot && \
     install -d -m 1777 /models
-ENV DOTBOOT_MODELS_DIR=/models
+# DOTBOOT_DOCKER: os erros de pasta explicam o que o wrapper monta.
+ENV DOTBOOT_MODELS_DIR=/models DOTBOOT_DOCKER=1
 VOLUME /models
 
 USER dotboot
