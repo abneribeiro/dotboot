@@ -23,7 +23,7 @@ RUN go mod download
 # ============================================================
 # Web stage: a página (SvelteKit + Tailwind), compilada para estático
 # ============================================================
-FROM node:24-slim AS web
+FROM node:25-slim AS web
 
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
