@@ -2,12 +2,11 @@ package jobs
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/abneribeiro/dotboot/internal/downloader"
@@ -15,43 +14,52 @@ import (
 	"github.com/abneribeiro/dotboot/internal/stems"
 )
 
-// StemsInput é um pedido de separação tal como vem do utilizador.
+const (
+	// SessionFormat é o formato das pistas guardadas para o estúdio: sem
+	// perdas (a exportação parte dele), metade do WAV e toca em todos os
+	// browsers atuais.
+	SessionFormat = "flac"
+
+	// PeaksFile guarda a forma de onda de cada pista, ao lado das pistas.
+	PeaksFile = "peaks.json"
+
+	// peaksPoints é a resolução da forma de onda: mais do que os píxeis de
+	// largura de um ecrã grande.
+	peaksPoints = 2000
+)
+
+// StemsInput é um pedido de separação tal como vem da página.
 type StemsInput struct {
-	// Inputs são URLs (http/https) ou ficheiros locais.
-	Inputs    []string
+	// Input é um URL (http/https) ou um ficheiro local (um upload).
+	Input string
+	// Name é o nome original de um ficheiro enviado, que dá o título à
+	// música (o upload em disco tem um nome aleatório).
+	Name string
+	// OutputDir é a pasta (absoluta) da sessão.
 	OutputDir string
-	// Model é o preset (6s, 4s, voz); vazio usa o default.
+	// Model é o preset (6s, 4s, voz, voz-hq); vazio usa o default.
 	Model string
-	// Format: mp3 (default), flac ou wav.
-	Format  string
-	Only    []string
-	Without []string
-	Start   string
-	End     string
-	Cookies string
+	Start string
+	End   string
 }
 
 // Stems é um pedido de separação validado.
 type Stems struct {
-	Inputs    []string
+	Input     string
+	Name      string
 	OutputDir string
 	Preset    stems.Preset
-	Format    string
-	Selection stems.Selection
 	Section   *downloader.Section
-	Cookies   string
 }
 
-// IsURL distingue um URL de um caminho local. Um URL mal escrito
-// ("youtube.com/…") conta como ficheiro e falha com "não existe", o que
-// também é verdade.
+// IsURL distingue um URL de um caminho local.
 func IsURL(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
-// NewStems valida o pedido. outputBase é o DOTBOOT_OUTPUT_DIR.
-func NewStems(in StemsInput, outputBase string) (*Stems, error) {
-	s := &Stems{Inputs: in.Inputs, Format: in.Format, Cookies: in.Cookies}
+// NewStems valida o pedido.
+func NewStems(in StemsInput) (*Stems, error) {
+	s := &Stems{Input: strings.TrimSpace(in.Input), Name: in.Name, OutputDir: in.OutputDir}
 
 	model := in.Model
 	if model == "" {
@@ -61,66 +69,48 @@ func NewStems(in StemsInput, outputBase string) (*Stems, error) {
 	if s.Preset, err = stems.LookupPreset(model); err != nil {
 		return nil, err
 	}
-	if s.Format == "" {
-		s.Format = "mp3"
-	}
-	if !slices.Contains(stems.Formats, s.Format) {
-		return nil, fmt.Errorf("formato inválido: %q (usa %s)", s.Format, strings.Join(stems.Formats, ", "))
-	}
-	if s.Selection, err = stems.Select(s.Preset, in.Only, in.Without); err != nil {
-		return nil, err
-	}
-	if s.OutputDir, err = ResolveOutputDir(in.OutputDir, outputBase); err != nil {
-		return nil, err
+	if !filepath.IsAbs(s.OutputDir) {
+		return nil, fmt.Errorf("pasta da sessão inválida: %q", s.OutputDir)
 	}
 
-	if len(s.Inputs) == 0 {
-		return nil, fmt.Errorf("indica pelo menos um URL ou ficheiro de música")
+	if s.Input == "" {
+		return nil, fmt.Errorf("indica um URL ou um ficheiro de música")
 	}
 	if (in.Start != "") != (in.End != "") {
 		return nil, fmt.Errorf("para fazer um recorte indica o início e o fim")
 	}
 	if in.Start != "" {
-		if len(s.Inputs) != 1 {
-			return nil, fmt.Errorf("o recorte exige exatamente uma música")
-		}
 		if err := downloader.ValidateRange(in.Start, in.End); err != nil {
 			return nil, fmt.Errorf("recorte inválido: %w", err)
 		}
 		s.Section = &downloader.Section{Start: in.Start, End: in.End}
 	}
 
-	for _, input := range s.Inputs {
-		if IsURL(input) {
-			if err := downloader.ValidateURL(input); err != nil {
-				return nil, err
-			}
-			continue
+	if IsURL(s.Input) {
+		if err := downloader.ValidateURL(s.Input); err != nil {
+			return nil, err
 		}
-		info, err := os.Stat(input)
-		if err != nil {
-			return nil, fmt.Errorf("%s: não é um URL nem um ficheiro que exista", input)
-		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("%s é uma pasta; indica os ficheiros de música", input)
-		}
+		return s, nil
 	}
-	if s.Cookies != "" {
-		if _, err := os.Stat(s.Cookies); err != nil {
-			return nil, fmt.Errorf("cookies: %w", err)
-		}
+	info, err := os.Stat(s.Input)
+	if err != nil {
+		return nil, fmt.Errorf("o ficheiro de música já não existe: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("%s é uma pasta, não um ficheiro de música", s.Input)
 	}
 	return s, nil
 }
 
-// Run separa cada música e guarda as pistas pedidas, uma pasta por música.
-// Uma música que falhe não impede as seguintes: no fim devolve ErrPartial
-// com o que ficou feito, ou o erro quando nenhuma correu bem.
+// Run separa a música e deixa na pasta da sessão uma pista FLAC por stem do
+// modelo, mais a forma de onda de cada uma (PeaksFile). O intermédio (o WAV
+// de entrada, as pistas em WAV) vive num diretório de trabalho sempre
+// removido.
 func (s *Stems) Run(ctx context.Context, env Env, report Reporter) (Result, error) {
 	res := Result{OutputDir: s.OutputDir}
 	sink := &reporterSink{report: report}
 
-	if slices.ContainsFunc(s.Inputs, IsURL) {
+	if IsURL(s.Input) {
 		if _, err := exec.LookPath("yt-dlp"); err != nil {
 			return res, fmt.Errorf("yt-dlp não encontrado no PATH (precisa dele para URLs): %w", err)
 		}
@@ -129,80 +119,20 @@ func (s *Stems) Run(ctx context.Context, env Env, report Reporter) (Result, erro
 		return res, err
 	}
 
-	var errs []error
-	for i, input := range s.Inputs {
-		sink.send(Event{Index: i + 1, Count: len(s.Inputs), Item: displayName(input)})
-		files, err := s.separateOne(ctx, input, env, sink)
-		if ctx.Err() != nil {
-			return res, context.Canceled
-		}
-		res.Files = append(res.Files, files...)
-		if err != nil {
-			sink.log(fmt.Sprintf("❌ %s: %v", displayName(input), err))
-			errs = append(errs, err)
-		}
-	}
-
-	switch {
-	case len(errs) == 0:
-		return res, nil
-	case len(errs) < len(s.Inputs):
-		return res, fmt.Errorf("%w: %d de %d música(s) falharam", ErrPartial, len(errs), len(s.Inputs))
-	default:
-		return res, errors.Join(errs...)
-	}
-}
-
-// displayName encurta um caminho local para o nome do ficheiro.
-func displayName(input string) string {
-	if IsURL(input) {
-		return input
-	}
-	return filepath.Base(input)
-}
-
-// separateOne trata de uma música. Tudo o que é intermédio (o WAV de
-// entrada, as pistas em WAV) vive num diretório de trabalho sempre removido.
-func (s *Stems) separateOne(ctx context.Context, input string, env Env, sink *reporterSink) ([]string, error) {
 	work, err := os.MkdirTemp(env.TempDir, "dotboot-stems-")
 	if err != nil {
-		return nil, fmt.Errorf("não foi possível criar o diretório de trabalho: %w", err)
+		return res, fmt.Errorf("não foi possível criar o diretório de trabalho: %w", err)
 	}
 	defer os.RemoveAll(work)
 
-	cookies := s.Cookies
-	if cookies == "" {
-		cookies = env.CookiesFile
+	audio, title, err := s.prepareInput(ctx, work, env, sink)
+	if err != nil {
+		if ctx.Err() != nil {
+			return res, context.Canceled
+		}
+		return res, err
 	}
-
-	var audio, title string
-	if IsURL(input) {
-		sink.send(Event{Stage: StageDownload, Progress: true, Fraction: -1, ETA: -1})
-		stderr := procio.NewLineWriter(sink.log)
-		audio, err = downloader.DownloadAudio(ctx, input, s.Section, work, downloader.AudioOpts{
-			CookiesFile: cookies,
-			JSRuntimes:  env.JSRuntimes,
-			Progress:    sink.progress,
-			Stdout:      writerFunc(sink.log),
-			Stderr:      stderr,
-		})
-		stderr.Flush()
-		if err != nil {
-			return nil, fmt.Errorf("download falhou: %w", err)
-		}
-		title = strings.TrimSuffix(filepath.Base(audio), filepath.Ext(audio))
-	} else {
-		sink.send(Event{Stage: StageExtract, Progress: true, Fraction: -1, ETA: -1})
-		title = strings.TrimSuffix(filepath.Base(input), filepath.Ext(input))
-		audio = filepath.Join(work, "entrada.wav")
-		start, end := "", ""
-		if s.Section != nil {
-			start, end = s.Section.Start, s.Section.End
-		}
-		if err := stems.ToWAV(ctx, input, audio, start, end); err != nil {
-			return nil, fmt.Errorf("não foi possível ler %s: %w", input, err)
-		}
-	}
+	res.Title = title
 	sink.send(Event{Item: title})
 
 	sink.send(Event{Stage: StageSeparate, Progress: true, Fraction: 0, ETA: -1,
@@ -221,17 +151,81 @@ func (s *Stems) separateOne(ctx context.Context, input string, env Env, sink *re
 			sink.send(Event{Progress: true, Fraction: f, ETA: -1})
 		})
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return res, context.Canceled
+		}
+		return res, err
 	}
 
-	sink.send(Event{Stage: StageExport, Progress: true, Fraction: -1, ETA: -1})
-	dest := filepath.Join(s.OutputDir, title)
-	files, err := stems.Export(ctx, tracks, s.Selection, dest, s.Format, title)
+	sink.send(Event{Stage: StageExport, Progress: true, Fraction: 0, ETA: -1})
+	if res.Files, err = s.store(ctx, tracks, title, sink); err != nil {
+		if ctx.Err() != nil {
+			return res, context.Canceled
+		}
+		return res, err
+	}
+	sink.log("✅ Pistas prontas: " + strings.Join(s.Preset.Stems, ", "))
+	return res, nil
+}
+
+// prepareInput deixa a música num WAV pronto a separar e devolve-o com o
+// título: de um URL descarrega só o áudio; de um ficheiro converte-o.
+func (s *Stems) prepareInput(ctx context.Context, work string, env Env, sink *reporterSink) (string, string, error) {
+	if IsURL(s.Input) {
+		sink.send(Event{Stage: StageDownload, Progress: true, Fraction: -1, ETA: -1, Item: s.Input})
+		stderr := procio.NewLineWriter(sink.log)
+		audio, err := downloader.DownloadAudio(ctx, s.Input, s.Section, work, downloader.AudioOpts{
+			CookiesFile: env.CookiesFile,
+			JSRuntimes:  env.JSRuntimes,
+			Progress:    sink.progress,
+			Stdout:      writerFunc(sink.log),
+			Stderr:      stderr,
+		})
+		stderr.Flush()
+		if err != nil {
+			return "", "", fmt.Errorf("download falhou: %w", err)
+		}
+		return audio, strings.TrimSuffix(filepath.Base(audio), filepath.Ext(audio)), nil
+	}
+
+	name := s.Name
+	if name == "" {
+		name = filepath.Base(s.Input)
+	}
+	title := strings.TrimSuffix(name, filepath.Ext(name))
+	sink.send(Event{Stage: StageExtract, Progress: true, Fraction: -1, ETA: -1, Item: title})
+	audio := filepath.Join(work, "entrada.wav")
+	start, end := "", ""
+	if s.Section != nil {
+		start, end = s.Section.Start, s.Section.End
+	}
+	if err := stems.ToWAV(ctx, s.Input, audio, start, end); err != nil {
+		return "", "", fmt.Errorf("não foi possível ler %s: %w", name, err)
+	}
+	return audio, title, nil
+}
+
+// store converte as pistas para a sessão e mede a forma de onda de cada uma.
+func (s *Stems) store(ctx context.Context, tracks map[string]string, title string, sink *reporterSink) ([]string, error) {
+	files, err := stems.Export(ctx, tracks, s.Preset.Stems, s.OutputDir, SessionFormat, title)
 	if err != nil {
 		return files, err
 	}
-	for _, f := range files {
-		sink.log("✅ " + f)
+	peaks := make(map[string]stems.Peaks, len(files))
+	for i, stem := range s.Preset.Stems {
+		p, err := stems.MeasurePeaks(ctx, files[i], peaksPoints)
+		if err != nil {
+			return files, err
+		}
+		peaks[stem] = p
+		sink.send(Event{Progress: true, Fraction: float64(i+1) / float64(len(files)), ETA: -1})
+	}
+	data, err := json.Marshal(peaks)
+	if err != nil {
+		return files, err
+	}
+	if err := os.WriteFile(filepath.Join(s.OutputDir, PeaksFile), data, 0o644); err != nil {
+		return files, fmt.Errorf("não foi possível gravar a forma de onda: %w", err)
 	}
 	return files, nil
 }

@@ -1,8 +1,8 @@
 package doctor
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -39,7 +39,7 @@ func byName(checks []Check, name string) Check {
 
 func TestCollect(t *testing.T) {
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	cfg := &config.Config{TempDir: t.TempDir(), OutputDir: t.TempDir()}
+	cfg := &config.Config{TempDir: t.TempDir(), DataDir: t.TempDir()}
 
 	complete := map[string]string{
 		"yt-dlp":          "2026.10.26\n",
@@ -68,7 +68,7 @@ func TestCollect(t *testing.T) {
 
 func TestCollectAmbienteIncompleto(t *testing.T) {
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	cfg := &config.Config{TempDir: t.TempDir(), OutputDir: t.TempDir()}
+	cfg := &config.Config{TempDir: t.TempDir(), DataDir: t.TempDir()}
 
 	checks := collect(context.Background(), cfg, fakeSystem(now, map[string]string{
 		"yt-dlp": "2026.01.10\n", // ~9 meses
@@ -85,7 +85,7 @@ func TestCollectAmbienteIncompleto(t *testing.T) {
 		{"JavaScript", LevelOK}, // o node serve
 		{"stems", LevelWarn},    // opcional
 		{"temporários", LevelOK},
-		{"saída", LevelOK},
+		{"dados", LevelOK},
 	}
 	for _, tt := range tests {
 		c := byName(checks, tt.name)
@@ -138,16 +138,14 @@ func TestVersionAfter(t *testing.T) {
 	}
 }
 
-func TestRender(t *testing.T) {
-	var buf bytes.Buffer
-	render(&buf, []Check{{Name: "a", Level: LevelWarn, Detail: "x", Fix: "y"}})
-	if !strings.Contains(buf.String(), "1 aviso") || !strings.Contains(buf.String(), "→ y") {
-		t.Errorf("relatório inesperado:\n%s", buf.String())
+func TestLevelJSON(t *testing.T) {
+	data, err := json.Marshal([]Check{{Name: "a"}, {Name: "b", Level: LevelWarn}, {Name: "c", Level: LevelFail, Fix: "x"}})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	buf.Reset()
-	render(&buf, []Check{{Name: "b", Level: LevelFail, Detail: "x", Fix: "z"}})
-	if !strings.Contains(buf.String(), "1 problema") {
-		t.Errorf("relatório inesperado:\n%s", buf.String())
+	want := `[{"name":"a","level":"ok","detail":""},{"name":"b","level":"warn","detail":""},` +
+		`{"name":"c","level":"fail","detail":"","fix":"x"}]`
+	if string(data) != want {
+		t.Errorf("JSON = %s\nquero  %s", data, want)
 	}
 }

@@ -1,7 +1,6 @@
 package jobs
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -54,26 +53,23 @@ var (
 	AudioFormats = []string{FormatMP3, FormatM4A}
 )
 
-// DownloadInput é um pedido de download tal como vem do utilizador (flags ou
-// formulário da TUI), antes de validado.
+// DownloadInput é um pedido de download tal como vem da página, antes de
+// validado.
 type DownloadInput struct {
-	URLs      []string
-	BatchFile string
-	// OutputDir é o -o: vazio usa a base, relativo fica dentro dela.
+	URLs []string
+	// OutputDir é a pasta (absoluta) onde o servidor quer os ficheiros.
 	OutputDir string
 	// Quality é "best" (ou vazio) ou a resolução máxima, ex: "720".
 	Quality string
 	// Format: mp4 (default), original, mp3 ou m4a.
-	Format  string
-	Start   string
-	End     string
-	Cookies string
+	Format string
+	Start  string
+	End    string
 }
 
 // Download é um pedido validado, pronto a correr.
 type Download struct {
 	URLs       []string
-	BatchFile  string
 	OutputDir  string
 	Format     string
 	FormatSort string
@@ -81,7 +77,6 @@ type Download struct {
 	// acima de 1080p uma recodificação é praticamente certa.
 	Height  int
 	Section *downloader.Section
-	Cookies string
 }
 
 // Audio reporta se o pedido guarda só o áudio.
@@ -89,9 +84,12 @@ func (d *Download) Audio() bool {
 	return slices.Contains(AudioFormats, d.Format)
 }
 
-// NewDownload valida o pedido. outputBase é o DOTBOOT_OUTPUT_DIR.
-func NewDownload(in DownloadInput, outputBase string) (*Download, error) {
-	d := &Download{URLs: in.URLs, BatchFile: in.BatchFile, Cookies: in.Cookies}
+// NewDownload valida o pedido.
+func NewDownload(in DownloadInput) (*Download, error) {
+	d := &Download{URLs: in.URLs, OutputDir: in.OutputDir}
+	if !filepath.IsAbs(d.OutputDir) {
+		return nil, fmt.Errorf("pasta de saída inválida: %q", d.OutputDir)
+	}
 
 	switch in.Format {
 	case "", FormatMP4:
@@ -115,21 +113,14 @@ func NewDownload(in DownloadInput, outputBase string) (*Download, error) {
 		d.Height, _ = strconv.Atoi(in.Quality)
 	}
 
-	if d.OutputDir, err = ResolveOutputDir(in.OutputDir, outputBase); err != nil {
-		return nil, err
-	}
-
-	if len(d.URLs) == 0 && d.BatchFile == "" {
-		return nil, fmt.Errorf("indica pelo menos um URL ou um ficheiro de URLs")
+	if len(d.URLs) == 0 {
+		return nil, fmt.Errorf("indica pelo menos um URL")
 	}
 
 	if (in.Start != "") != (in.End != "") {
 		return nil, fmt.Errorf("para fazer um recorte indica o início e o fim")
 	}
 	if in.Start != "" {
-		if d.BatchFile != "" {
-			return nil, fmt.Errorf("o recorte não é compatível com um ficheiro de URLs")
-		}
 		if len(d.URLs) != 1 {
 			return nil, fmt.Errorf("o recorte exige exatamente um URL")
 		}
@@ -144,47 +135,7 @@ func NewDownload(in DownloadInput, outputBase string) (*Download, error) {
 			return nil, err
 		}
 	}
-	if d.BatchFile != "" {
-		if err := validateBatchFile(d.BatchFile); err != nil {
-			return nil, err
-		}
-	}
-	if d.Cookies != "" {
-		if _, err := os.Stat(d.Cookies); err != nil {
-			return nil, fmt.Errorf("cookies: %w", err)
-		}
-	}
 	return d, nil
-}
-
-// ResolveOutputDir aplica as regras do caminho base (DOTBOOT_OUTPUT_DIR) a
-// um -o: vazio usa a base, relativo fica dentro dela, absoluto ignora-a. Sem
-// base, um -o relativo é relativo ao diretório atual e a ausência de -o cai
-// para o próprio diretório atual. Um "~" inicial é expandido (vem de um
-// formulário, não da shell).
-func ResolveOutputDir(dir, base string) (string, error) {
-	if strings.HasPrefix(dir, "~") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		if dir == "~" || strings.HasPrefix(dir, "~/") {
-			dir = filepath.Join(home, strings.TrimPrefix(dir, "~"))
-		}
-	}
-	if dir == "" {
-		dir = base
-	} else if base != "" && !filepath.IsAbs(dir) {
-		dir = filepath.Join(base, dir)
-	}
-	if dir != "" {
-		return dir, nil
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("não foi possível determinar o diretório atual: %w", err)
-	}
-	return wd, nil
 }
 
 // outputTemplate devolve o -o do yt-dlp. Um recorte leva o intervalo no nome:
@@ -204,37 +155,6 @@ func outputTemplate(dir string, sec *downloader.Section) string {
 // aceitam dois pontos em nomes de ficheiros.
 func clockForFilename(t string) string {
 	return strings.ReplaceAll(t, ":", ".")
-}
-
-// validateBatchFile garante que o ficheiro de URLs existe e que cada linha
-// útil é um URL válido — apanhar isto aqui poupa uma execução inteira do
-// yt-dlp. Linhas vazias e comentários (#) são ignorados, como no yt-dlp.
-func validateBatchFile(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("ficheiro de URLs: %w", err)
-	}
-	defer f.Close()
-
-	urls := 0
-	scanner := bufio.NewScanner(f)
-	for line := 1; scanner.Scan(); line++ {
-		text := strings.TrimSpace(scanner.Text())
-		if text == "" || strings.HasPrefix(text, "#") {
-			continue
-		}
-		if err := downloader.ValidateURL(text); err != nil {
-			return fmt.Errorf("%s, linha %d: %w", path, line, err)
-		}
-		urls++
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("erro ao ler %s: %w", path, err)
-	}
-	if urls == 0 {
-		return fmt.Errorf("%s não contém nenhum URL", path)
-	}
-	return nil
 }
 
 // reporterSink adapta um Reporter aos callbacks do downloader, num só sítio.
@@ -287,21 +207,15 @@ func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, e
 	if err := PrepareOutputDir(d.OutputDir); err != nil {
 		return res, err
 	}
-	cookies := d.Cookies
-	if cookies == "" {
-		cookies = env.CookiesFile
-	}
-
 	stderr := procio.NewLineWriter(sink.log)
 	defer stderr.Flush()
 	opts := downloader.Options{
 		URLs:           d.URLs,
-		BatchFile:      d.BatchFile,
 		FormatSort:     d.FormatSort,
 		OutputTemplate: outputTemplate(d.OutputDir, d.Section),
 		Continue:       true,
 		IgnoreErrors:   true,
-		CookiesFile:    cookies,
+		CookiesFile:    env.CookiesFile,
 		JSRuntimes:     env.JSRuntimes,
 		Progress:       sink.progress,
 		Stdout:         writerFunc(sink.log),

@@ -22,31 +22,7 @@ func tempFile(t *testing.T, name, content string) string {
 	return path
 }
 
-func TestResolveOutputDir(t *testing.T) {
-	wd, _ := os.Getwd()
-	home, _ := os.UserHomeDir()
-	tests := []struct {
-		name, dir, base, want string
-	}{
-		{"absoluto ignora a base", "/da/flag", "/do/env", "/da/flag"},
-		{"relativo fica dentro da base", "musica", "/do/env", "/do/env/musica"},
-		{"relativo sem base fica relativo", "musica", "", "musica"},
-		{"sem -o usa a base", "", "/do/env", "/do/env"},
-		{"sem -o nem base é o diretório atual", "", "", wd},
-		{"~ de um formulário é expandido", "~/Musica", "/do/env", filepath.Join(home, "Musica")},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := ResolveOutputDir(tt.dir, tt.base)
-			if err != nil || got != tt.want {
-				t.Errorf("ResolveOutputDir(%q, %q) = %q, %v; esperado %q", tt.dir, tt.base, got, err, tt.want)
-			}
-		})
-	}
-}
-
 func TestNewDownloadValidacao(t *testing.T) {
-	urls := tempFile(t, "urls.txt", "https://youtu.be/a\nhttps://youtu.be/b\n")
 	one := []string{"https://youtu.be/a"}
 
 	tests := []struct {
@@ -55,7 +31,7 @@ func TestNewDownloadValidacao(t *testing.T) {
 		wantErr bool
 	}{
 		{"um URL", DownloadInput{URLs: one}, false},
-		{"ficheiro de URLs", DownloadInput{BatchFile: urls}, false},
+		{"vários URLs", DownloadInput{URLs: []string{"https://a.pt/1", "https://a.pt/2"}}, false},
 		{"recorte", DownloadInput{URLs: one, Start: "01:00", End: "02:00"}, false},
 		{"qualidade", DownloadInput{URLs: one, Quality: "720"}, false},
 		{"mp3", DownloadInput{URLs: one, Format: "mp3"}, false},
@@ -65,17 +41,18 @@ func TestNewDownloadValidacao(t *testing.T) {
 		{"URL sem esquema", DownloadInput{URLs: []string{"youtube.com/x"}}, true},
 		{"início sem fim", DownloadInput{URLs: one, Start: "01:00"}, true},
 		{"recorte com dois URLs", DownloadInput{URLs: []string{"https://a.pt/1", "https://a.pt/2"}, Start: "01:00", End: "02:00"}, true},
-		{"recorte com ficheiro de URLs", DownloadInput{BatchFile: urls, Start: "01:00", End: "02:00"}, true},
 		{"recorte invertido", DownloadInput{URLs: one, Start: "02:00", End: "01:00"}, true},
-		{"ficheiro de URLs inexistente", DownloadInput{BatchFile: "/nao/existe"}, true},
 		{"qualidade inválida", DownloadInput{URLs: one, Quality: "hd"}, true},
 		{"qualidade com áudio", DownloadInput{URLs: one, Format: "mp3", Quality: "720"}, true},
 		{"formato desconhecido", DownloadInput{URLs: one, Format: "webm"}, true},
-		{"cookies inexistentes", DownloadInput{URLs: one, Cookies: "/nao/existe.txt"}, true},
+		{"pasta relativa", DownloadInput{URLs: one, OutputDir: "videos"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewDownload(tt.in, "/videos")
+			if tt.in.OutputDir == "" {
+				tt.in.OutputDir = "/videos"
+			}
+			_, err := NewDownload(tt.in)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewDownload(%+v) err = %v, wantErr = %v", tt.in, err, tt.wantErr)
 			}
@@ -84,7 +61,7 @@ func TestNewDownloadValidacao(t *testing.T) {
 }
 
 func TestNewDownloadTraduzQualidadeEFormato(t *testing.T) {
-	d, err := NewDownload(DownloadInput{URLs: []string{"https://youtu.be/a"}, Quality: "2160"}, "")
+	d, err := NewDownload(DownloadInput{URLs: []string{"https://youtu.be/a"}, Quality: "2160", OutputDir: "/v"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +69,7 @@ func TestNewDownloadTraduzQualidadeEFormato(t *testing.T) {
 		t.Errorf("Download = %+v", d)
 	}
 
-	d, err = NewDownload(DownloadInput{URLs: []string{"https://youtu.be/a"}, Format: "m4a"}, "")
+	d, err = NewDownload(DownloadInput{URLs: []string{"https://youtu.be/a"}, Format: "m4a", OutputDir: "/v"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,26 +91,6 @@ func TestOutputTemplate(t *testing.T) {
 	}
 	if strings.Contains(filepath.Base(trimmed), ":") {
 		t.Errorf("o nome não pode ter ':' (inválido no Windows/macOS): %q", trimmed)
-	}
-}
-
-func TestValidateBatchFile(t *testing.T) {
-	tests := []struct {
-		name, content string
-		wantErr       bool
-	}{
-		{"URLs válidos", "https://youtu.be/a\nhttps://youtu.be/b\n", false},
-		{"vazias e comentários são ignorados", "# lista\n\nhttps://youtu.be/a\n", false},
-		{"URL inválido", "https://youtu.be/a\nyoutube.com/x\n", true},
-		{"sem URLs", "# só comentários\n\n", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateBatchFile(tempFile(t, "urls.txt", tt.content))
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateBatchFile = %v, wantErr = %v", err, tt.wantErr)
-			}
-		})
 	}
 }
 
@@ -194,23 +151,25 @@ func TestNewStemsValidacao(t *testing.T) {
 		in      StemsInput
 		wantErr bool
 	}{
-		{"ficheiro", StemsInput{Inputs: []string{song}}, false},
-		{"URL", StemsInput{Inputs: []string{"https://youtu.be/a"}}, false},
-		{"karaoke", StemsInput{Inputs: []string{song}, Model: "voz", Only: []string{"instrumental"}}, false},
-		{"sem guitarra", StemsInput{Inputs: []string{song}, Without: []string{"guitarra"}, Format: "flac"}, false},
-		{"recorte", StemsInput{Inputs: []string{song}, Start: "00:30", End: "01:00"}, false},
+		{"ficheiro", StemsInput{Input: song}, false},
+		{"URL", StemsInput{Input: "https://youtu.be/a"}, false},
+		{"karaoke", StemsInput{Input: song, Model: "voz"}, false},
+		{"recorte", StemsInput{Input: song, Start: "00:30", End: "01:00"}, false},
 
-		{"sem entradas", StemsInput{}, true},
-		{"ficheiro inexistente", StemsInput{Inputs: []string{"/nao/existe.mp3"}}, true},
-		{"pasta", StemsInput{Inputs: []string{dir}}, true},
-		{"modelo desconhecido", StemsInput{Inputs: []string{song}, Model: "12s"}, true},
-		{"formato desconhecido", StemsInput{Inputs: []string{song}, Format: "ogg"}, true},
-		{"pista que o modelo não tem", StemsInput{Inputs: []string{song}, Model: "4s", Without: []string{"guitarra"}}, true},
-		{"recorte com duas músicas", StemsInput{Inputs: []string{song, song}, Start: "00:30", End: "01:00"}, true},
+		{"sem entrada", StemsInput{}, true},
+		{"ficheiro inexistente", StemsInput{Input: "/nao/existe.mp3"}, true},
+		{"pasta", StemsInput{Input: dir}, true},
+		{"URL sem esquema", StemsInput{Input: "youtube.com/x"}, true},
+		{"modelo desconhecido", StemsInput{Input: song, Model: "12s"}, true},
+		{"início sem fim", StemsInput{Input: song, Start: "00:30"}, true},
+		{"sessão relativa", StemsInput{Input: song, OutputDir: "sessao"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewStems(tt.in, "")
+			if tt.in.OutputDir == "" {
+				tt.in.OutputDir = "/sessao"
+			}
+			_, err := NewStems(tt.in)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewStems(%+v) err = %v, wantErr = %v", tt.in, err, tt.wantErr)
 			}
@@ -219,14 +178,11 @@ func TestNewStemsValidacao(t *testing.T) {
 }
 
 func TestNewStemsDefaults(t *testing.T) {
-	s, err := NewStems(StemsInput{Inputs: []string{"https://youtu.be/a"}}, "/base")
+	s, err := NewStems(StemsInput{Input: " https://youtu.be/a ", OutputDir: "/sessao"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Preset.Name != "6s" || s.Format != "mp3" || s.OutputDir != "/base" {
+	if s.Preset.Name != "6s" || s.Input != "https://youtu.be/a" || s.Section != nil {
 		t.Errorf("Stems = %+v", s)
-	}
-	if !slices.Equal(s.Selection.Keep, s.Preset.Stems) || s.Selection.MixName != "" {
-		t.Errorf("seleção por omissão = %+v", s.Selection)
 	}
 }
