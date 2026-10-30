@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # dotboot (via Docker) — corre o dotboot dentro de um container, sem yt-dlp,
-# ffmpeg, deno nem audio-separator no host. `make install-docker` instala-o
+# ffmpeg nem deno no host. `make install-docker` instala-o
 # no PATH com o nome "dotboot".
 #
 #   dotboot                         abre a TUI
 #   dotboot <url>                   igual a "dotboot download <url>"
 #   dotboot download -o aulas <url>
-#   dotboot stems ~/Musica/song.mp3
+#   dotboot download -formato mp3 -o musica <url>
 #
 # O container corre com o teu utilizador e com a tua home montada no mesmo
 # caminho: o ~, os caminhos absolutos, o ~/.config/dotboot e o seletor de
-# ficheiros da TUI funcionam como na instalação nativa. Os modelos dos stems
-# ficam no volume "dotboot-models".
+# ficheiros da TUI funcionam como na instalação nativa.
 #
 # Variáveis: DOTBOOT_IMAGE (default dotboot:latest) e as DOTBOOT_* do dotboot.
 set -euo pipefail
@@ -20,7 +19,7 @@ image=${DOTBOOT_IMAGE:-dotboot:latest}
 
 # Aceita "dotboot <url>" como atalho de "dotboot download <url>".
 case "${1:-}" in
-"" | tui | download | stems | doctor | version | help | -h | --help | -v | --version) ;;
+"" | tui | download | doctor | version | help | -h | --help | -v | --version) ;;
 *) set -- download "$@" ;;
 esac
 
@@ -28,7 +27,6 @@ docker_args=(run --rm -i --init
 	--user "$(id -u):$(id -g)"
 	-e HOME="$HOME"
 	-v "$HOME:$HOME"
-	-v dotboot-models:/models
 	-w "$PWD")
 
 # A TUI precisa de um terminal; as cores, de saber qual é.

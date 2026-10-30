@@ -42,11 +42,10 @@ func TestCollect(t *testing.T) {
 	cfg := &config.Config{TempDir: t.TempDir(), OutputDir: t.TempDir()}
 
 	complete := map[string]string{
-		"yt-dlp":          "2026.10.26\n",
-		"ffmpeg":          "ffmpeg version 7.1.5-0+deb13u1 Copyright (c) 2000-2026\n",
-		"ffprobe":         "ffprobe version 7.1.5-0+deb13u1 Copyright (c) 2000-2026\n",
-		"deno":            "deno 2.9.8 (stable, release, x86_64-unknown-linux-gnu)\n",
-		"audio-separator": "",
+		"yt-dlp":  "2026.10.26\n",
+		"ffmpeg":  "ffmpeg version 7.1.5-0+deb13u1 Copyright (c) 2000-2026\n",
+		"ffprobe": "ffprobe version 7.1.5-0+deb13u1 Copyright (c) 2000-2026\n",
+		"deno":    "deno 2.9.8 (stable, release, x86_64-unknown-linux-gnu)\n",
 	}
 	checks := collect(context.Background(), cfg, fakeSystem(now, complete))
 	for _, c := range checks {
@@ -83,7 +82,6 @@ func TestCollectAmbienteIncompleto(t *testing.T) {
 		{"ffmpeg", LevelFail},   // sem ele não há merge nem conversão
 		{"ffprobe", LevelFail},  // sem ele não há verificação de formato
 		{"JavaScript", LevelOK}, // o node serve
-		{"stems", LevelWarn},    // opcional
 		{"temporários", LevelOK},
 		{"saída", LevelOK},
 	}

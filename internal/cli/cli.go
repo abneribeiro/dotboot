@@ -1,4 +1,4 @@
-// Package cli implementa os subcomandos de terminal (download e stems): lê as
+// Package cli implementa o subcomando de terminal download: lê as
 // flags, entrega o pedido ao motor partilhado (internal/jobs) e mostra o
 // progresso em texto. É a face para scripts; a TUI usa o mesmo motor.
 package cli
@@ -244,14 +244,12 @@ func stageIcon(s jobs.Stage) string {
 	switch s {
 	case jobs.StageDownload:
 		return "⬇️ "
-	case jobs.StageMerge, jobs.StageExport:
+	case jobs.StageMerge:
 		return "📦"
 	case jobs.StageExtract:
 		return "🎵"
 	case jobs.StageConvert:
 		return "🔄"
-	case jobs.StageSeparate:
-		return "🎛️ "
 	default:
 		return "🔎"
 	}

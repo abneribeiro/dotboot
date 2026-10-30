@@ -23,20 +23,8 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel = %v, esperado info", cfg.LogLevel)
 	}
-	if cfg.ModelsDir != "/home/ana/.cache/dotboot/models" {
-		t.Errorf("ModelsDir = %q, esperado a cache do utilizador", cfg.ModelsDir)
-	}
 	if cfg.OutputDir != "" || cfg.CookiesFile != "" || cfg.JSRuntimes != "" {
 		t.Errorf("saída/cookies/js deviam vir vazios: %+v", cfg)
-	}
-
-	// O XDG_CACHE_HOME tem prioridade, como nas outras ferramentas.
-	cfg, err = loadFrom(envMap(map[string]string{"HOME": "/home/ana", "XDG_CACHE_HOME": "/cache"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ModelsDir != "/cache/dotboot/models" {
-		t.Errorf("ModelsDir = %q, esperado /cache/dotboot/models", cfg.ModelsDir)
 	}
 }
 
@@ -52,13 +40,12 @@ func TestLoadFromOverrides(t *testing.T) {
 		KeyLogLevel:    "debug",
 		KeyCookiesFile: cookies,
 		KeyJSRuntimes:  "node",
-		KeyModelsDir:   "/modelos",
 	}))
 	if err != nil {
 		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
 	}
-	if cfg.OutputDir != "/videos" || cfg.TempDir != "/scratch" || cfg.ModelsDir != "/modelos" {
-		t.Errorf("caminhos = %q %q %q", cfg.OutputDir, cfg.TempDir, cfg.ModelsDir)
+	if cfg.OutputDir != "/videos" || cfg.TempDir != "/scratch" {
+		t.Errorf("caminhos = %q %q", cfg.OutputDir, cfg.TempDir)
 	}
 	if cfg.LogLevel != slog.LevelDebug || cfg.CookiesFile != cookies || cfg.JSRuntimes != "node" {
 		t.Errorf("config = %+v", cfg)
@@ -112,7 +99,7 @@ func TestSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "config.env")
 
 	// Ficheiro novo: cria a pasta, escreve ordenado e com 0600.
-	if err := Save(path, map[string]string{KeyOutputDir: "/home/ana/Os Meus Vídeos", KeyModelsDir: "/m"}); err != nil {
+	if err := Save(path, map[string]string{KeyOutputDir: "/home/ana/Os Meus Vídeos", KeyCookiesFile: "/m"}); err != nil {
 		t.Fatalf("Save falhou: %v", err)
 	}
 	info, err := os.Stat(path)
@@ -124,10 +111,10 @@ func TestSave(t *testing.T) {
 	}
 
 	// Segunda gravação: preserva o resto, substitui e remove (valor vazio).
-	if err := os.WriteFile(path, []byte("# comentário\nOUTRA=1\n"+KeyOutputDir+"=/antigo\n"+KeyModelsDir+"=/m\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("# comentário\nOUTRA=1\n"+KeyOutputDir+"=/antigo\n"+KeyCookiesFile+"=/m\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Save(path, map[string]string{KeyOutputDir: "/novo", KeyModelsDir: ""}); err != nil {
+	if err := Save(path, map[string]string{KeyOutputDir: "/novo", KeyCookiesFile: ""}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
@@ -137,7 +124,7 @@ func TestSave(t *testing.T) {
 			t.Errorf("falta %q em:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, KeyModelsDir) || strings.Contains(got, "/antigo") {
+	if strings.Contains(got, KeyCookiesFile) || strings.Contains(got, "/antigo") {
 		t.Errorf("a chave vazia devia sair e a antiga ser substituída:\n%s", got)
 	}
 

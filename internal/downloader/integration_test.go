@@ -188,22 +188,3 @@ func TestRunReportaProgresso(t *testing.T) {
 	}
 	assertPlayableOnPhones(t, ctx, files[0])
 }
-
-// TestDownloadAudioDaUmWAV cobre a entrada da separação de stems.
-func TestDownloadAudioDaUmWAV(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	dir := t.TempDir()
-	got, err := DownloadAudio(ctx, testURLCurto, &Section{Start: "00:02", End: "00:07"}, dir, AudioOpts{})
-	if err != nil {
-		t.Fatalf("DownloadAudio falhou: %v", err)
-	}
-	if filepath.Ext(got) != ".wav" {
-		t.Errorf("DownloadAudio = %q, esperado um .wav", got)
-	}
-	d, err := ProbeDuration(ctx, got)
-	if err != nil || d < 3 || d > 8 {
-		t.Errorf("duração do recorte = %v (%v), esperado ~5s", d, err)
-	}
-}

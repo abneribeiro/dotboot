@@ -47,7 +47,7 @@ func (m *Model) render() string {
 func (m *Model) renderHeader() string {
 	t := m.theme
 	left := t.logo.Render("▶ dotboot") + " " + t.version.Render(m.version)
-	sub := t.subtitle.Render("vídeos, áudio e stems no terminal")
+	sub := t.subtitle.Render("vídeos e música no terminal")
 
 	var status string
 	if running, queued := m.queue.counts(); running+queued > 0 {
@@ -85,7 +85,7 @@ func (m *Model) hints() []hint {
 	case screenDoctor:
 		return []hint{{"r", "verificar de novo"}, {"esc", "menu"}}
 	default:
-		return []hint{{"↑/↓", "escolher"}, {"enter", "abrir"}, {"1-6", "atalho"}, {"tab", "trabalhos"}, {"q", "sair"}}
+		return []hint{{"↑/↓", "escolher"}, {"enter", "abrir"}, {"1-5", "atalho"}, {"tab", "trabalhos"}, {"q", "sair"}}
 	}
 }
 
@@ -302,7 +302,7 @@ func (m *Model) renderDoctor() string {
 	var b strings.Builder
 	b.WriteString(t.title.Render("Diagnóstico") + "\n\n")
 	if m.checking {
-		b.WriteString(m.spinner.View() + " a verificar o yt-dlp, o ffmpeg, o deno e o audio-separator…")
+		b.WriteString(m.spinner.View() + " a verificar o yt-dlp, o ffmpeg e o deno…")
 		return b.String()
 	}
 	for _, c := range m.checks {

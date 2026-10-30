@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -44,10 +43,9 @@ type menuItem struct {
 var menu = []menuItem{
 	{"🎬", "Descarregar vídeo", "MP4 que toca em todo o lado · playlists · recortes"},
 	{"🎵", "Extrair áudio", "MP3 ou M4A com título e capa"},
-	{"🎸", "Separar música", "vozes, bateria, baixo, guitarra, piano"},
 	{"📋", "Trabalhos", "progresso, ficheiros e logs"},
 	{"🩺", "Diagnóstico", "o que está instalado e o que falta"},
-	{"⚙️ ", "Definições", "pasta de saída, cookies, modelos"},
+	{"⚙️ ", "Definições", "pasta de saída e cookies"},
 }
 
 // doctorMsg traz o resultado das verificações do diagnóstico.
@@ -68,7 +66,6 @@ type Model struct {
 	formErr  string
 	video    videoValues
 	audio    audioValues
-	stemsV   stemsValues
 	settings settingsValues
 
 	queue     *queue
@@ -90,7 +87,6 @@ type Model struct {
 
 // New cria a TUI. Com fundo escuro por omissão, até o terminal responder.
 func New(cfg *config.Config, version string) *Model {
-	home, _ := os.UserHomeDir()
 	m := &Model{
 		cfg:     cfg,
 		version: version,
@@ -105,7 +101,6 @@ func New(cfg *config.Config, version string) *Model {
 	}
 	m.video = videoValues{quality: "best", format: jobs.FormatMP4}
 	m.audio = audioValues{format: jobs.FormatMP3}
-	m.stemsV = stemsValues{source: sourceURL, model: "6s", format: "mp3", fileStartDirectory: home}
 	m.applyTheme()
 	return m
 }
@@ -240,13 +235,11 @@ func (m *Model) openMenu(i int) tea.Cmd {
 	case 1:
 		return m.openForm(formAudio)
 	case 2:
-		return m.openForm(formStems)
-	case 3:
 		m.screen = screenJobs
-	case 4:
+	case 3:
 		return m.openDoctor()
-	case 5:
-		m.settings = settingsValues{output: m.cfg.OutputDir, cookies: m.cfg.CookiesFile, models: m.cfg.ModelsDir}
+	case 4:
+		m.settings = settingsValues{output: m.cfg.OutputDir, cookies: m.cfg.CookiesFile}
 		return m.openForm(formSettings)
 	}
 	return nil
@@ -272,8 +265,6 @@ func (m *Model) openForm(kind formKind) tea.Cmd {
 		m.form = newVideoForm(&m.video, base)
 	case formAudio:
 		m.form = newAudioForm(&m.audio, base)
-	case formStems:
-		m.form = newStemsForm(&m.stemsV, base)
 	case formSettings:
 		m.form = newSettingsForm(&m.settings)
 	}
@@ -335,18 +326,6 @@ func (m *Model) submit() tea.Cmd {
 			})
 			m.audio.urls = ""
 		}
-	case formStems:
-		var s *jobs.Stems
-		if s, err = m.stemsV.toStems(base); err == nil {
-			title := titleOf(s.Inputs)
-			if !jobs.IsURL(title) {
-				title = filepath.Base(title)
-			}
-			m.enqueue(kindStems, title, func(ctx context.Context, r jobs.Reporter) (jobs.Result, error) {
-				return s.Run(ctx, env, r)
-			})
-			m.stemsV.url, m.stemsV.file = "", ""
-		}
 	case formSettings:
 		if err = m.saveSettings(); err == nil {
 			m.closeForm()
@@ -390,7 +369,6 @@ func (m *Model) saveSettings() error {
 	values := map[string]string{
 		config.KeyOutputDir:   strings.TrimSpace(v.output),
 		config.KeyCookiesFile: strings.TrimSpace(v.cookies),
-		config.KeyModelsDir:   strings.TrimSpace(v.models),
 	}
 	if err := config.Save(config.FilePath(), values); err != nil {
 		return err
@@ -403,9 +381,6 @@ func (m *Model) saveSettings() error {
 		return e
 	}
 	m.cfg.OutputDir, m.cfg.CookiesFile = expand(v.output), expand(v.cookies)
-	if models := expand(v.models); models != "" {
-		m.cfg.ModelsDir = models
-	}
 	return nil
 }
 
@@ -527,9 +502,6 @@ func (m *Model) openFolder(j *job) {
 	if dir == "" {
 		m.flash = "Este trabalho ainda não tem pasta."
 		return
-	}
-	if len(j.result.Files) > 0 && j.kind == kindStems {
-		dir = filepath.Dir(j.result.Files[0])
 	}
 	opener := "xdg-open"
 	switch runtime.GOOS {

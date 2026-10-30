@@ -91,32 +91,6 @@ func TestParseInterspersed(t *testing.T) {
 	}
 }
 
-func TestParseStemsArgs(t *testing.T) {
-	s, err := parseStemsArgs([]string{"https://youtu.be/a", "-so", "Guitarra, guitarra", "-sem", "guitarra", "-formato", "flac"}, "")
-	if err != nil {
-		t.Fatalf("parseStemsArgs devolveu erro inesperado: %v", err)
-	}
-	// O par para praticar: a guitarra sozinha e a faixa sem ela.
-	if !slices.Equal(s.Selection.Keep, []string{"guitarra"}) || s.Selection.MixName != "sem-guitarra" || s.Format != "flac" {
-		t.Errorf("Stems = %+v", s)
-	}
-	if _, err := parseStemsArgs([]string{"-modelo", "4s", "-sem", "guitarra", "https://youtu.be/a"}, ""); err == nil {
-		t.Error("o modelo 4s não tem guitarra: devia falhar")
-	}
-	if _, err := parseStemsArgs([]string{"-h"}, ""); !errors.Is(err, errHelp) {
-		t.Errorf("parseStemsArgs(-h) = %v, esperado errHelp", err)
-	}
-}
-
-func TestSplitList(t *testing.T) {
-	if got := SplitList(" Guitarra, baixo,,guitarra "); !slices.Equal(got, []string{"guitarra", "baixo"}) {
-		t.Errorf("SplitList = %v", got)
-	}
-	if got := SplitList(""); got != nil {
-		t.Errorf("SplitList(\"\") = %v, esperado nil", got)
-	}
-}
-
 func TestTextReporter(t *testing.T) {
 	var buf bytes.Buffer
 	r := &textReporter{out: &buf, tty: true}

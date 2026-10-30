@@ -17,7 +17,7 @@ const (
 	PhaseDownload
 	// PhaseMerge: a juntar vídeo e áudio com o ffmpeg.
 	PhaseMerge
-	// PhaseExtract: a extrair/converter o áudio (modo áudio, stems).
+	// PhaseExtract: a extrair/converter o áudio (modo áudio).
 	PhaseExtract
 )
 

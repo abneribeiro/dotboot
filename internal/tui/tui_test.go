@@ -30,7 +30,7 @@ var ctrlC = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 func newTestModel(t *testing.T) *Model {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	m := New(&config.Config{OutputDir: t.TempDir(), TempDir: t.TempDir(), ModelsDir: t.TempDir()}, "v1.2.3")
+	m := New(&config.Config{OutputDir: t.TempDir(), TempDir: t.TempDir()}, "v1.2.3")
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 32})
 	return m
 }
@@ -62,11 +62,14 @@ func stripANSI(s string) string {
 func TestHomeMostraOMenu(t *testing.T) {
 	m := newTestModel(t)
 	out := view(m)
-	for _, want := range []string{"dotboot", "v1.2.3", "Descarregar vídeo", "Extrair áudio", "Separar música",
-		"Trabalhos", "Diagnóstico", "Definições", "q sair"} {
+	for _, want := range []string{"dotboot", "v1.2.3", "Descarregar vídeo", "Extrair áudio",
+		"Trabalhos", "Diagnóstico", "Definições", "1-5 atalho", "q sair"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("falta %q no menu:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "Separar") {
+		t.Errorf("a separação de músicas já não existe:\n%s", out)
 	}
 	if !m.View().AltScreen {
 		t.Error("a TUI deve usar o ecrã alternativo")
@@ -80,7 +83,7 @@ func TestNavegacaoAbreOsFormularios(t *testing.T) {
 	}{
 		{[]tea.KeyPressMsg{key(tea.KeyEnter)}, formVideo},
 		{[]tea.KeyPressMsg{key(tea.KeyDown), key(tea.KeyEnter)}, formAudio},
-		{[]tea.KeyPressMsg{key('3')}, formStems},
+		{[]tea.KeyPressMsg{key('5')}, formSettings},
 		{[]tea.KeyPressMsg{key(tea.KeyUp), key(tea.KeyEnter)}, formSettings},
 	}
 	for _, tt := range tests {
@@ -212,10 +215,10 @@ func TestFalhaAparecaNoCartao(t *testing.T) {
 	m := newTestModel(t)
 	release := make(chan struct{})
 	close(release)
-	j := m.queue.add(kindStems, "song.mp3", fakeRun(release, errors.New("audio-separator falhou: exit status 1")))
+	j := m.queue.add(kindAudio, "song", fakeRun(release, errors.New("ffmpeg falhou: exit status 1")))
 	m.screen = screenJobs
 	pump(t, m, func() bool { return j.status == statusFailed })
-	if out := view(m); !strings.Contains(out, "falhou") || !strings.Contains(out, "audio-separator falhou") {
+	if out := view(m); !strings.Contains(out, "falhou") || !strings.Contains(out, "ffmpeg falhou") {
 		t.Errorf("a falha devia aparecer:\n%s", out)
 	}
 }
@@ -253,16 +256,16 @@ func TestDiagnostico(t *testing.T) {
 	m.collect = func(context.Context, *config.Config) []doctor.Check {
 		return []doctor.Check{
 			{Name: "yt-dlp", Level: doctor.LevelOK, Detail: "2026.10.26"},
-			{Name: "stems", Level: doctor.LevelWarn, Detail: "audio-separator não encontrado", Fix: "make deps-stems"},
+			{Name: "JavaScript", Level: doctor.LevelWarn, Detail: "nem deno nem node", Fix: "make deps"},
 		}
 	}
-	_, cmd := m.Update(key('5'))
+	_, cmd := m.Update(key('4'))
 	if m.screen != screenDoctor || !m.checking {
-		t.Fatalf("5 devia abrir o diagnóstico")
+		t.Fatalf("4 devia abrir o diagnóstico")
 	}
 	m.Update(cmd())
 	out := view(m)
-	for _, want := range []string{"2026.10.26", "audio-separator não encontrado", "make deps-stems", "Tudo pronto"} {
+	for _, want := range []string{"2026.10.26", "nem deno nem node", "make deps", "Tudo pronto"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("falta %q:\n%s", want, out)
 		}
@@ -271,12 +274,12 @@ func TestDiagnostico(t *testing.T) {
 
 func TestDefinicoesGravamEAplicam(t *testing.T) {
 	m := newTestModel(t)
-	m.Update(key('6'))
+	m.Update(key('5'))
 	out := filepath.Join(t.TempDir(), "Os Meus Vídeos")
-	m.settings = settingsValues{output: out, models: "/modelos"}
+	m.settings = settingsValues{output: out}
 	m.submit()
 
-	if m.screen != screenHome || m.cfg.OutputDir != out || m.cfg.ModelsDir != "/modelos" {
+	if m.screen != screenHome || m.cfg.OutputDir != out {
 		t.Errorf("definições não aplicadas: ecrã %v, cfg %+v", m.screen, m.cfg)
 	}
 	data, err := os.ReadFile(config.FilePath())
@@ -309,17 +312,5 @@ func TestEcraCabeNumTerminalPequeno(t *testing.T) {
 		}
 		close(release)
 		m.queue.shutdown(time.Second)
-	}
-}
-
-func TestToStemsDescartaPistasDeOutroModelo(t *testing.T) {
-	v := stemsValues{source: sourceURL, url: "https://youtu.be/a", model: "4s", format: "mp3",
-		only: []string{"guitarra", "baixo"}, without: []string{"piano"}}
-	s, err := v.toStems("")
-	if err != nil {
-		t.Fatalf("toStems falhou: %v", err)
-	}
-	if len(s.Selection.Keep) != 1 || s.Selection.Keep[0] != "baixo" || s.Selection.MixName != "" {
-		t.Errorf("seleção = %+v", s.Selection)
 	}
 }

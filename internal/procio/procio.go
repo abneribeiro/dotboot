@@ -1,6 +1,5 @@
 // Package procio tem os utilitários de leitura do output dos processos
-// externos (yt-dlp, ffmpeg, audio-separator) partilhados pelo downloader e
-// pelos stems.
+// externos (yt-dlp, ffmpeg) usados pelo downloader e pelo motor.
 package procio
 
 import (
@@ -9,9 +8,9 @@ import (
 )
 
 // LineWriter é um io.Writer que entrega o output linha a linha a uma função.
-// Corta tanto em "\n" como em "\r": as barras de progresso do ffmpeg e do
-// tqdm (audio-separator) reescrevem a mesma linha com "\r", e sem isto só se
-// via o progresso quando a barra terminava.
+// Corta tanto em "\n" como em "\r": as barras de progresso do ffmpeg
+// reescrevem a mesma linha com "\r", e sem isto só se via o progresso quando
+// a barra terminava.
 type LineWriter struct {
 	mu   sync.Mutex
 	buf  []byte

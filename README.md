@@ -1,14 +1,14 @@
-# dotboot — vídeos, áudio e stems no terminal
+# dotboot — vídeos e música no terminal
 
-O **dotboot** descarrega vídeos e áudio de qualquer site suportado pelo
-**yt-dlp** (YouTube, X/Twitter, Instagram, TikTok, SoundCloud, Facebook…) e
-**separa músicas em pistas** — vozes, bateria, baixo, guitarra, piano. Tem
-uma **interface de terminal** (TUI) para usar no dia a dia e **subcomandos**
-para scripts.
+O **dotboot** descarrega vídeos e música de qualquer site suportado pelo
+**yt-dlp** (YouTube, X/Twitter, Instagram, TikTok, SoundCloud, Facebook…),
+na melhor qualidade e num formato que toca em todo o lado: o iPhone, o
+Android, o Windows, o macOS e o WhatsApp. Tem uma **interface de terminal**
+(TUI) para usar no dia a dia e **subcomandos** para scripts.
 
 ```
  ▶ dotboot  v1.0.0                                    ⣾ a correr · 1 na fila
- vídeos, áudio e stems no terminal
+ vídeos e música no terminal
  ──────────────────────────────────────────────────────────────────────────
  O que queres fazer?
 
@@ -16,11 +16,9 @@ para scripts.
          MP4 que toca em todo o lado · playlists · recortes
    2  🎵 Extrair áudio
          MP3 ou M4A com título e capa
-   3  🎸 Separar música
-         vozes, bateria, baixo, guitarra, piano
-   4  📋 Trabalhos
-   5  🩺 Diagnóstico
-   6  ⚙️  Definições
+   3  📋 Trabalhos
+   4  🩺 Diagnóstico
+   5  ⚙️  Definições
 ```
 
 ## ✨ O que faz
@@ -37,13 +35,6 @@ para scripts.
 
 **Áudio**
 - 🎵 MP3 ou M4A, com título, artista e capa nos metadados
-
-**Stems** (separação de música)
-- 🎸 **6 pistas**: vozes, bateria, baixo, guitarra, piano e outros
-- 🎤 **Karaoke**: vozes + instrumental, com o melhor modelo para a voz
-- 🎧 **Faixa para tocar por cima**: a música *sem* a guitarra (ou sem o que
-  quiseres)
-- A partir de um URL ou de um ficheiro do computador; MP3, FLAC ou WAV
 
 **Interface**
 - Formulários com validação, fila de trabalhos com barra de progresso,
@@ -65,8 +56,7 @@ e no fim corre o diagnóstico. Há duas formas:
 |---|---|---|
 | Comando | `make docker-build && make install-docker` | `make deps && make install` |
 | Precisa de | Docker | Go 1.26+ (o `make deps` instala yt-dlp, deno e ffmpeg) |
-| Stems | incluídos | `make deps-stems` (precisa de um compilador C) |
-| Espaço | ~3GB (sobretudo o PyTorch) | ~1.5GB com os stems |
+| Espaço | ~300MB | o binário + yt-dlp, deno e ffmpeg |
 
 As duas instalam o comando `dotboot` em `~/.local/bin` (muda com
 `make install PREFIX=/usr/local`). Se o comando não for encontrado,
@@ -82,8 +72,7 @@ mesmo caminho: os ficheiros ficam teus, e `~`, caminhos absolutos e as
 definições funcionam como na versão nativa. Também monta a pasta de saída e a
 dos cookies das Definições e, no WSL, os discos do Windows (`/mnt/c`…). Uma
 pasta fora destas, escolhida depois de abrir o dotboot, só fica acessível
-depois de o fechar e voltar a abrir. Os modelos dos stems ficam no volume
-Docker `dotboot-models`, para só se descarregarem uma vez.
+depois de o fechar e voltar a abrir.
 
 **Outras formas** (só a CLI nativa; as dependências instalam-se à parte com o
 `scripts/install-deps.sh` que vem no archive):
@@ -107,8 +96,8 @@ dotboot
 
 | Ecrã | Teclas |
 |---|---|
-| Menu | `↑`/`↓` ou `1`–`6` para escolher, `enter` abrir, `tab` trabalhos, `q` sair |
-| Formulários | `enter` seguinte, `shift+tab` anterior, `esc` cancelar; no seletor de ficheiros `←` volta à pasta de cima |
+| Menu | `↑`/`↓` ou `1`–`5` para escolher, `enter` abrir, `tab` trabalhos, `q` sair |
+| Formulários | `enter` seguinte, `shift+tab` anterior, `esc` cancelar |
 | Trabalhos | `enter` detalhes e log, `c` cancelar, `r` repetir, `o` abrir a pasta, `x` limpar os terminados, `esc` menu |
 
 Os trabalhos correm um de cada vez, por ordem, enquanto continuas a usar a
@@ -117,7 +106,7 @@ cancela-os; o que ficou a meio retoma-se ao repetir.
 
 ### Os subcomandos (scripts)
 
-`dotboot download -h` e `dotboot stems -h` mostram a ajuda completa. As flags
+`dotboot download -h` mostra a ajuda completa. As flags
 podem vir antes ou depois dos URLs.
 
 ```bash
@@ -136,39 +125,11 @@ dotboot download -start 01:30 -end 02:00 https://x.com/user/status/123
 # Ficheiro com um URL por linha
 dotboot download -a urls.txt
 
-# Todas as pistas de uma música
-dotboot stems "https://youtube.com/watch?v=xxxx"
-
-# Para praticar guitarra: a guitarra isolada e a música sem ela
-dotboot stems -so guitarra -sem guitarra ~/Musica/song.mp3
-
-# Karaoke: só o instrumental, com o melhor modelo para a voz
-dotboot stems -modelo voz -so instrumental "https://youtube.com/watch?v=xxxx"
-
 # O que está instalado e o que falta
 dotboot doctor
 ```
 
 > No zsh, URLs com `?` (ex: `watch?v=...`) têm de ir entre aspas.
-
-### Separar músicas (stems)
-
-Cada música fica numa pasta: `<saída>/<título>/guitarra.mp3`, `baixo.mp3`,
-`sem-guitarra.mp3`…
-
-| Modelo | Pistas | Para quê | Tempo no CPU* |
-|---|---|---|---|
-| `6s` (default) | vozes, bateria, baixo, guitarra, piano, outros | Separar tudo; o piano é a pista mais fraca | ~1× a duração |
-| `4s` | vozes, bateria, baixo, outros | Mais limpo; guitarra e piano ficam em "outros" | ~4× |
-| `voz` | vozes, instrumental | Karaoke e voz a capella (MDX-Net) | ~1× |
-| `voz-hq` | vozes, instrumental | O mesmo na melhor qualidade (BS-RoFormer) | ~20× — só para trechos |
-
-\* Medido num portátil: 30 segundos de música demoraram 35s (`6s`), 2min40s
-(`4s`), 40s (`voz`) e 11min (`voz-hq`).
-
-A separação usa o [audio-separator](https://github.com/nomadkaraoke/python-audio-separator)
-(modelos HT-Demucs, MDX-Net e BS-RoFormer) e corre no CPU. Cada modelo
-descarrega-se na primeira utilização (50–650MB).
 
 ### O formato de vídeo: MP4 que o telemóvel lê
 
@@ -199,8 +160,7 @@ variáveis de ambiente também valem (estas têm sempre prioridade).
 |---|---|---|
 | `DOTBOOT_OUTPUT_DIR` | Pasta base: usada sem `-o`, e raiz de um `-o` relativo | diretório atual |
 | `DOTBOOT_COOKIES_FILE` | Cookies (formato Netscape) para sites que pedem login | — |
-| `DOTBOOT_MODELS_DIR` | Modelos dos stems | `~/.cache/dotboot/models` |
-| `DOTBOOT_TEMP_DIR` | Trabalho intermédio dos stems | default do sistema |
+| `DOTBOOT_TEMP_DIR` | Ficheiros temporários dos downloads | default do sistema |
 | `DOTBOOT_JS_RUNTIMES` | Força o runtime JS do yt-dlp (ex: `node`) | deno, ou node |
 | `DOTBOOT_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` (subcomandos) | `info` |
 
@@ -218,7 +178,6 @@ o que falta, se o yt-dlp está desatualizado e como resolver.
   desatualizado. Docker: `make update-ytdlp`; nativo: `yt-dlp -U`.
 - **A conversão no fim demora muito**: a fonte não tinha H.264 (acima de
   1080p no YouTube). Escolhe 1080p, ou o formato original.
-- **Stems lentos**: é o CPU. A primeira vez também descarrega o modelo.
 - **`dotboot: command not found`**: falta `~/.local/bin` no `PATH` (ver
   Instalação).
 
@@ -227,7 +186,7 @@ o que falta, se o yt-dlp está desatualizado e como resolver.
 ```bash
 make run                      # abre a TUI a partir do código
 make check                    # gofmt, vet e testes com -race (o mesmo que o CI)
-make test-integration-docker  # yt-dlp, ffmpeg e audio-separator reais, dentro da imagem
+make test-integration-docker  # yt-dlp e ffmpeg reais, dentro da imagem
 make release-snapshot         # binários de todas as plataformas em dist/
 make release VERSION=v1.0.0   # cria a tag; o GitHub Actions publica a release
 ```
@@ -235,10 +194,9 @@ make release VERSION=v1.0.0   # cria a tag; o GitHub Actions publica a release
 ```
 cmd/dotboot/          Entrada: TUI ou subcomandos
 internal/tui/         Interface (Bubble Tea, Lip Gloss, Bubbles, Huh)
-internal/cli/         Subcomandos download e stems
+internal/cli/         Subcomando download
 internal/jobs/        Motor partilhado: valida, executa e relata o progresso
 internal/downloader/  yt-dlp e ffmpeg (download, garantia de MP4)
-internal/stems/       audio-separator e ffmpeg (separação e mistura)
 internal/doctor/      Diagnóstico
 internal/config/      Configuração e config.env
 scripts/              setup, dependências, wrapper Docker, instalação

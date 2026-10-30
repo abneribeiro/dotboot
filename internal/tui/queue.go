@@ -12,21 +12,18 @@ import (
 	"github.com/abneribeiro/dotboot/internal/jobs"
 )
 
-// jobKind distingue os três tipos de trabalho, para o ícone e o rótulo.
+// jobKind distingue os tipos de trabalho, para o ícone e o rótulo.
 type jobKind int
 
 const (
 	kindVideo jobKind = iota
 	kindAudio
-	kindStems
 )
 
 func (k jobKind) label() string {
 	switch k {
 	case kindAudio:
 		return "🎵 Áudio"
-	case kindStems:
-		return "🎸 Stems"
 	default:
 		return "🎬 Vídeo"
 	}
@@ -42,7 +39,7 @@ const (
 	statusCanceled
 )
 
-// runFunc é o trabalho em si: um Download.Run ou Stems.Run já configurado.
+// runFunc é o trabalho em si: um Download.Run já configurado.
 type runFunc func(ctx context.Context, report jobs.Reporter) (jobs.Result, error)
 
 // maxLogLines limita o log guardado de cada trabalho: uma playlist longa
@@ -124,9 +121,9 @@ type (
 	}
 )
 
-// queue gere os trabalhos: corre um de cada vez (a separação de stems e as
-// conversões usam o CPU todo, e o yt-dlp em paralelo só incomoda os sites) e
-// guarda os restantes em fila.
+// queue gere os trabalhos: corre um de cada vez (as conversões usam o CPU
+// todo, e o yt-dlp em paralelo só incomoda os sites) e guarda os restantes
+// em fila.
 type queue struct {
 	jobs   []*job
 	nextID int
