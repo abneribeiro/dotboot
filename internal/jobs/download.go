@@ -18,29 +18,30 @@ import (
 )
 
 const (
-	// archiveFileName regista os vídeos já descarregados no diretório de
-	// saída; repetir o mesmo pedido salta-os e continua dos que faltam.
+	// archiveFileName records the videos already downloaded into the output
+	// folder; repeating a request skips them and carries on with the rest.
 	archiveFileName = ".dotboot-archive.txt"
 
-	// audioArchiveFileName é o archive dos downloads só de áudio. Tem de ser
-	// outro ficheiro: o archive regista o ID do vídeo e não o formato, e com
-	// um só ficheiro um vídeo já guardado em MP4 nunca chegava a sair em MP3.
+	// audioArchiveFileName is the archive for audio-only downloads. It must
+	// be a separate file: the archive records the video ID, not the format,
+	// and with a single file a video already saved as MP4 never came out as
+	// MP3.
 	audioArchiveFileName = ".dotboot-archive-audio.txt"
 
-	// pendingFileName lista os ficheiros que o yt-dlp concluiu e que ainda
-	// não passaram pela conversão para MP4. Vive no diretório de saída, e não
-	// num temporário, porque o archive regista o vídeo ANTES da conversão: um
-	// CTRL+C a meio deixava o .webm para sempre, já que a execução seguinte
-	// saltava o vídeo. Só é apagado quando tudo o que lista foi convertido.
-	pendingFileName = ".dotboot-pendentes.txt"
+	// pendingFileName lists the files yt-dlp finished that have not been
+	// through the MP4 conversion yet. It lives in the output folder, not in a
+	// temp file, because the archive records a video BEFORE the conversion:
+	// a Ctrl+C in between left the .webm forever, since the next run skipped
+	// the video. It is deleted only once everything it lists is converted.
+	pendingFileName = ".dotboot-pending.txt"
 
-	// maxH264Height é a resolução acima da qual os grandes sites (o YouTube
-	// em particular) deixam de oferecer H.264 — a partir daqui garantir MP4
-	// implica recodificar.
+	// maxH264Height is the resolution above which the big sites (YouTube in
+	// particular) stop offering H.264: past it, guaranteeing an MP4 means
+	// re-encoding.
 	maxH264Height = 1080
 )
 
-// Formatos aceites num Download.
+// Formats a Download accepts.
 const (
 	FormatMP4      = "mp4"
 	FormatOriginal = "original"
@@ -48,48 +49,45 @@ const (
 	FormatM4A      = "m4a"
 )
 
-// VideoFormats e AudioFormats são as opções de formato, pela ordem da ajuda.
-var (
-	VideoFormats = []string{FormatMP4, FormatOriginal}
-	AudioFormats = []string{FormatMP3, FormatM4A}
-)
+// AudioFormats are the audio-only formats.
+var AudioFormats = []string{FormatMP3, FormatM4A}
 
-// DownloadInput é um pedido de download tal como vem do utilizador (flags ou
-// formulário da TUI), antes de validado.
+// DownloadInput is a download request as the user gave it, before validation.
 type DownloadInput struct {
 	URLs      []string
 	BatchFile string
-	// OutputDir é o -o: vazio usa a base, relativo fica dentro dela.
+	// OutputDir is the -o value: empty uses the base folder, a relative path
+	// goes inside it.
 	OutputDir string
-	// Quality é "best" (ou vazio) ou a resolução máxima, ex: "720".
+	// Quality is "best" (or empty) or the maximum resolution, e.g. "720".
 	Quality string
-	// Format: mp4 (default), original, mp3 ou m4a.
+	// Format: mp4 (default), original, mp3 or m4a.
 	Format  string
 	Start   string
 	End     string
 	Cookies string
 }
 
-// Download é um pedido validado, pronto a correr.
+// Download is a validated request, ready to run.
 type Download struct {
 	URLs       []string
 	BatchFile  string
 	OutputDir  string
 	Format     string
 	FormatSort string
-	// Height é a resolução pedida, 0 para "best": serve para avisar que
-	// acima de 1080p uma recodificação é praticamente certa.
+	// Height is the requested resolution, 0 for "best": it is used to warn
+	// that above 1080p a re-encode is almost certain.
 	Height  int
 	Section *downloader.Section
 	Cookies string
 }
 
-// Audio reporta se o pedido guarda só o áudio.
+// Audio reports whether the request keeps only the audio.
 func (d *Download) Audio() bool {
 	return slices.Contains(AudioFormats, d.Format)
 }
 
-// NewDownload valida o pedido. outputBase é o DOTBOOT_OUTPUT_DIR.
+// NewDownload validates the request. outputBase is DOTBOOT_OUTPUT_DIR.
 func NewDownload(in DownloadInput, outputBase string) (*Download, error) {
 	d := &Download{URLs: in.URLs, BatchFile: in.BatchFile, Cookies: in.Cookies}
 
@@ -99,7 +97,7 @@ func NewDownload(in DownloadInput, outputBase string) (*Download, error) {
 	case FormatOriginal, FormatMP3, FormatM4A:
 		d.Format = in.Format
 	default:
-		return nil, fmt.Errorf("formato inválido: %q (usa mp4, original, mp3 ou m4a)", in.Format)
+		return nil, fmt.Errorf("invalid format %q (use mp3 or m4a)", in.Format)
 	}
 
 	var err error
@@ -108,10 +106,10 @@ func NewDownload(in DownloadInput, outputBase string) (*Download, error) {
 	}
 	if d.FormatSort != "" {
 		if d.Audio() {
-			return nil, fmt.Errorf("a qualidade escolhe a resolução do vídeo e não se aplica a %s", d.Format)
+			return nil, fmt.Errorf("the quality picks the video resolution and does not apply to %s", d.Format)
 		}
-		// Já validado por QualitySort, que rejeita tudo o que não seja um
-		// inteiro positivo.
+		// Already validated by QualitySort, which rejects anything but a
+		// positive integer.
 		d.Height, _ = strconv.Atoi(in.Quality)
 	}
 
@@ -120,21 +118,21 @@ func NewDownload(in DownloadInput, outputBase string) (*Download, error) {
 	}
 
 	if len(d.URLs) == 0 && d.BatchFile == "" {
-		return nil, fmt.Errorf("indica pelo menos um URL ou um ficheiro de URLs")
+		return nil, errors.New("give at least one URL or a batch file")
 	}
 
 	if (in.Start != "") != (in.End != "") {
-		return nil, fmt.Errorf("para fazer um recorte indica o início e o fim")
+		return nil, errors.New("a trim needs both --start and --end")
 	}
 	if in.Start != "" {
 		if d.BatchFile != "" {
-			return nil, fmt.Errorf("o recorte não é compatível com um ficheiro de URLs")
+			return nil, errors.New("a trim cannot be combined with a batch file")
 		}
 		if len(d.URLs) != 1 {
-			return nil, fmt.Errorf("o recorte exige exatamente um URL")
+			return nil, errors.New("a trim takes exactly one URL")
 		}
 		if err := downloader.ValidateRange(in.Start, in.End); err != nil {
-			return nil, fmt.Errorf("recorte inválido: %w", err)
+			return nil, fmt.Errorf("invalid trim: %w", err)
 		}
 		d.Section = &downloader.Section{Start: in.Start, End: in.End}
 	}
@@ -157,20 +155,17 @@ func NewDownload(in DownloadInput, outputBase string) (*Download, error) {
 	return d, nil
 }
 
-// ResolveOutputDir aplica as regras do caminho base (DOTBOOT_OUTPUT_DIR) a
-// um -o: vazio usa a base, relativo fica dentro dela, absoluto ignora-a. Sem
-// base, um -o relativo é relativo ao diretório atual e a ausência de -o cai
-// para o próprio diretório atual. Um "~" inicial é expandido (vem de um
-// formulário, não da shell).
+// ResolveOutputDir applies the base folder (DOTBOOT_OUTPUT_DIR) to an -o
+// value: empty uses the base, a relative path goes inside it, an absolute
+// path ignores it. Without a base, a relative -o is relative to the current
+// folder and no -o means the current folder. A leading "~" is expanded.
 func ResolveOutputDir(dir, base string) (string, error) {
-	if strings.HasPrefix(dir, "~") {
+	if dir == "~" || strings.HasPrefix(dir, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		if dir == "~" || strings.HasPrefix(dir, "~/") {
-			dir = filepath.Join(home, strings.TrimPrefix(dir, "~"))
-		}
+		dir = filepath.Join(home, strings.TrimPrefix(dir, "~"))
 	}
 	if dir == "" {
 		dir = base
@@ -182,16 +177,16 @@ func ResolveOutputDir(dir, base string) (string, error) {
 	}
 	wd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("não foi possível determinar o diretório atual: %w", err)
+		return "", fmt.Errorf("cannot determine the current folder: %w", err)
 	}
 	return wd, nil
 }
 
-// outputTemplate devolve o -o do yt-dlp. Um recorte leva o intervalo no nome:
-// com o mesmo nome do vídeo completo, o yt-dlp encontrava o ficheiro já
-// existente e respondia "already downloaded" — num sentido não recortava
-// nada, no outro registava no archive o vídeo completo com o conteúdo do
-// recorte, e esse vídeo nunca mais era descarregado.
+// outputTemplate returns yt-dlp's -o. A trim puts the interval in the name:
+// with the same name as the full video, yt-dlp found the existing file and
+// answered "already downloaded". One way it trimmed nothing; the other way
+// it recorded the full video in the archive with the trim's content, and
+// that video was never downloaded again.
 func outputTemplate(dir string, sec *downloader.Section) string {
 	name := "%(title)s [%(id)s]"
 	if sec != nil {
@@ -200,19 +195,19 @@ func outputTemplate(dir string, sec *downloader.Section) string {
 	return filepath.Join(dir, name+".%(ext)s")
 }
 
-// clockForFilename troca ":" por ".": o Windows e o Finder do macOS não
-// aceitam dois pontos em nomes de ficheiros.
+// clockForFilename swaps ":" for ".": Windows and macOS Finder do not accept
+// colons in file names.
 func clockForFilename(t string) string {
 	return strings.ReplaceAll(t, ":", ".")
 }
 
-// validateBatchFile garante que o ficheiro de URLs existe e que cada linha
-// útil é um URL válido — apanhar isto aqui poupa uma execução inteira do
-// yt-dlp. Linhas vazias e comentários (#) são ignorados, como no yt-dlp.
+// validateBatchFile checks that the batch file exists and that every useful
+// line is a valid URL: catching this here saves a whole yt-dlp run. Empty
+// lines and comments (#) are skipped, as yt-dlp does.
 func validateBatchFile(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("ficheiro de URLs: %w", err)
+		return fmt.Errorf("batch file: %w", err)
 	}
 	defer f.Close()
 
@@ -224,20 +219,20 @@ func validateBatchFile(path string) error {
 			continue
 		}
 		if err := downloader.ValidateURL(text); err != nil {
-			return fmt.Errorf("%s, linha %d: %w", path, line, err)
+			return fmt.Errorf("%s, line %d: %w", path, line, err)
 		}
 		urls++
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("erro ao ler %s: %w", path, err)
+		return fmt.Errorf("reading %s: %w", path, err)
 	}
 	if urls == 0 {
-		return fmt.Errorf("%s não contém nenhum URL", path)
+		return fmt.Errorf("%s has no URLs", path)
 	}
 	return nil
 }
 
-// reporterSink adapta um Reporter aos callbacks do downloader, num só sítio.
+// reporterSink adapts a Reporter to the downloader's callbacks, in one place.
 type reporterSink struct {
 	mu     sync.Mutex
 	report Reporter
@@ -251,7 +246,7 @@ func (r *reporterSink) send(e Event) {
 
 func (r *reporterSink) log(line string) { r.send(Event{Log: line}) }
 
-// progress traduz um downloader.Progress num Event.
+// progress turns a downloader.Progress into an Event.
 func (r *reporterSink) progress(p downloader.Progress) {
 	e := Event{Index: p.Index, Count: p.Count}
 	if p.File != "" {
@@ -262,8 +257,8 @@ func (r *reporterSink) progress(p downloader.Progress) {
 		e.Stage = StageInfo
 	case downloader.PhaseDownload:
 		e.Stage = StageDownload
-		// Uma linha "Destination" só anuncia o ficheiro; o progresso vem nas
-		// linhas do template, que têm sempre Downloaded ou Total.
+		// A "Destination" line only announces the file; the progress comes in
+		// the template lines, which always have Downloaded or Total.
 		if p.File == "" {
 			e.Progress, e.Fraction, e.Speed, e.ETA = true, p.Fraction(), p.Speed, p.ETA
 		}
@@ -275,11 +270,11 @@ func (r *reporterSink) progress(p downloader.Progress) {
 	r.send(e)
 }
 
-// Run executa o download. Não impõe timeout — playlists grandes podem
-// demorar horas; cancelar o contexto envia SIGINT ao yt-dlp e os .part ficam
-// prontos para retomar no pedido seguinte. Um contexto cancelado devolve
-// context.Canceled; parte dos itens falhada devolve ErrPartial com o Result
-// do que foi feito.
+// Run executes the download. It sets no timeout, since big playlists can
+// take hours; canceling the context sends SIGINT to yt-dlp and the .part
+// files stay ready to resume on the next run. A canceled context returns
+// context.Canceled; partly failed items return ErrPartial with the Result of
+// what was done.
 func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, error) {
 	res := Result{OutputDir: d.OutputDir}
 	sink := &reporterSink{report: report}
@@ -317,26 +312,26 @@ func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, e
 		archive = audioArchiveFileName
 
 	case d.Format == FormatMP4:
-		// Primeira camada da garantia: pedir ao yt-dlp formatos que já são
-		// H.264/AAC num contentor MP4. Resolve o caso comum sem recodificar.
+		// First layer of the guarantee: ask yt-dlp for formats that are
+		// already H.264/AAC in an MP4. That covers the common case without
+		// re-encoding.
 		opts.MergeFormat = "mp4"
 		opts.FormatSort = downloader.MP4Sort(d.FormatSort)
 		if d.Height > maxH264Height {
-			sink.log(fmt.Sprintf("ℹ️  Acima de %dp a maioria dos sites só serve AV1/VP9: "+
-				"o vídeo vai ser convertido para H.264, o que demora. "+
-				"%dp descarrega direto; o formato original não converte.", maxH264Height, maxH264Height))
+			sink.log(fmt.Sprintf("Note: above %dp most sites only serve AV1/VP9, so the video will be "+
+				"converted to H.264, which takes a while. %dp downloads directly.", maxH264Height, maxH264Height))
 		}
 	}
 
-	// O yt-dlp acrescenta aqui uma linha por ficheiro concluído: é por aí que
-	// se sabe exatamente o que foi produzido — incluindo numa playlist. No
-	// modo MP4 é a lista persistente de pendentes; nos outros, um temporário.
+	// yt-dlp appends one line per finished file here: that is how we know
+	// exactly what was produced, playlists included. In MP4 mode it is the
+	// persistent pending list; otherwise a temp file.
 	if d.Format == FormatMP4 {
 		opts.PrintToFile = filepath.Join(d.OutputDir, pendingFileName)
 	} else {
-		tmp, err := os.CreateTemp(env.TempDir, "dotboot-ficheiros-*.txt")
+		tmp, err := os.CreateTemp(env.TempDir, "dotboot-files-*.txt")
 		if err != nil {
-			return res, fmt.Errorf("não foi possível criar a lista de ficheiros: %w", err)
+			return res, fmt.Errorf("cannot create the file list: %w", err)
 		}
 		tmp.Close()
 		defer os.Remove(tmp.Name())
@@ -344,9 +339,8 @@ func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, e
 	}
 
 	if d.Section != nil {
-		// Recorte: aplica-se a um único vídeo (nunca a playlists inteiras)
-		// e não usa o archive — um recorte não pode marcar o vídeo completo
-		// como já descarregado.
+		// A trim applies to a single video (never a whole playlist) and does
+		// not use the archive: a trim must not mark the full video as done.
 		opts.Section = d.Section
 		opts.NoPlaylist = true
 	} else {
@@ -355,19 +349,20 @@ func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, e
 
 	sink.send(Event{Stage: StageInfo, Progress: true, Fraction: -1})
 
-	// O archive ganha uma linha por vídeo descarregado com sucesso: comparar
-	// antes e depois distingue "a playlist toda falhou" de "um vídeo privado
-	// pelo meio", que com --ignore-errors dão o mesmo código de saída.
+	// The archive gains a line per successfully downloaded video: comparing
+	// before and after tells "the whole playlist failed" from "one private
+	// video in the middle", which give the same exit code with
+	// --ignore-errors.
 	before := countArchive(opts.ArchiveFile)
 	runErr := downloader.Run(ctx, opts)
 
 	var convErr error
 	if d.Format == FormatMP4 {
-		// A conversão corre mesmo quando o yt-dlp falhou: com --ignore-errors
-		// uma playlist pode ter descarregado quase tudo antes de tropeçar num
-		// vídeo privado, e esses ficheiros também têm de sair em MP4. Corre
-		// também o que tenha ficado pendente de uma execução interrompida.
-		res.Files, convErr = ensurePlayable(ctx, opts.PrintToFile, sink)
+		// The conversion runs even when yt-dlp failed: with --ignore-errors a
+		// playlist may have downloaded almost everything before tripping on a
+		// private video, and those files must come out as MP4 too. It also
+		// handles anything left pending by an interrupted run.
+		res.Files, res.Converted, convErr = ensurePlayable(ctx, opts.PrintToFile, sink)
 	} else {
 		res.Files = printedPaths(opts.PrintToFile)
 	}
@@ -384,8 +379,8 @@ func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, e
 	return res, convErr
 }
 
-// writerFunc adapta uma função de linha a io.Writer (o downloader já entrega
-// o stdout linha a linha).
+// writerFunc adapts a line function to io.Writer (the downloader already
+// hands stdout over line by line).
 type writerFunc func(string)
 
 func (f writerFunc) Write(p []byte) (int, error) {
@@ -393,32 +388,36 @@ func (f writerFunc) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// ensurePlayable converte para MP4/H.264/AAC os ficheiros listados em
-// pathFile e devolve os caminhos finais. É a segunda camada da garantia: o
-// -S pede os codecs certos, isto assegura-os quando o site não os tinha.
-// Quando tudo fica convertido, apaga a lista; com falhas ou uma interrupção
-// mantém-na, e a execução seguinte recomeça por aí — o EnsureMP4 não toca no
-// que já está conforme.
-func ensurePlayable(ctx context.Context, pathFile string, sink *reporterSink) ([]string, error) {
+// ensurePlayable converts the files listed in pathFile to MP4/H.264/AAC and
+// returns the final paths, plus the files that needed a re-encode mapped to
+// their source codec. It is the second layer of the guarantee: -S asks for
+// the right codecs, this makes sure of them when the site did not have
+// them. When everything is converted it deletes the list; after failures or
+// an interruption it keeps it, and the next run starts there (EnsureMP4
+// leaves compliant files alone).
+func ensurePlayable(ctx context.Context, pathFile string, sink *reporterSink) ([]string, map[string]string, error) {
 	paths := printedPaths(pathFile)
 	var files []string
+	converted := make(map[string]string)
 	var failed int
 	for i, path := range paths {
-		// Um contexto já cancelado não vai conseguir converter nada; mais
-		// vale deixar os ficheiros intactos do que tentar e falhar N vezes.
+		// A canceled context will not convert anything; better to leave the
+		// files untouched than to try and fail N times.
 		if ctx.Err() != nil {
-			sink.log(fmt.Sprintf("⚠️  Conversão interrompida: %s e os seguintes são convertidos no próximo pedido.",
+			sink.log(fmt.Sprintf("Conversion interrupted: %s and the next ones convert on the next run.",
 				filepath.Base(path)))
-			return files, context.Canceled
+			return files, converted, context.Canceled
 		}
+		var source string
 		final, err := downloader.EnsureMP4(ctx, path, downloader.ConvertHooks{
 			Start: func(reencode bool, vcodec string) {
-				msg := "remux para MP4, sem perdas"
+				msg := "remuxing to MP4 (lossless)"
 				if reencode {
-					msg = fmt.Sprintf("%s → H.264: pode demorar vários minutos", vcodec)
+					source = vcodec
+					msg = fmt.Sprintf("converting %s to H.264, this can take a few minutes", strings.ToUpper(vcodec))
 				}
 				sink.send(Event{Stage: StageConvert, Item: filepath.Base(path), Index: i + 1, Count: len(paths),
-					Progress: true, Fraction: 0, ETA: -1, Log: "🔄 " + filepath.Base(path) + ": " + msg})
+					Progress: true, Fraction: 0, ETA: -1, Log: filepath.Base(path) + ": " + msg})
 			},
 			Progress: func(f float64) {
 				sink.send(Event{Progress: true, Fraction: f, ETA: -1})
@@ -426,32 +425,35 @@ func ensurePlayable(ctx context.Context, pathFile string, sink *reporterSink) ([
 		})
 		if err != nil {
 			if ctx.Err() != nil {
-				return files, context.Canceled
+				return files, converted, context.Canceled
 			}
-			sink.log("⚠️  " + err.Error())
+			sink.log("WARNING: " + err.Error())
 			failed++
 			files = append(files, path)
 			continue
+		}
+		if source != "" {
+			converted[final] = source
 		}
 		files = append(files, final)
 	}
 
 	if failed > 0 {
-		// O download em si correu bem: os ficheiros existem, só não estão
-		// garantidamente em MP4.
-		return files, fmt.Errorf("%w: %d de %d ficheiro(s) não puderam ser convertidos para MP4 "+
-			"(ficam em %s e são tentados no próximo pedido)", ErrPartial, failed, len(paths), pendingFileName)
+		// The download itself worked: the files exist, they are just not
+		// guaranteed to be MP4.
+		return files, converted, fmt.Errorf("%w: %d of %d file(s) could not be converted to MP4 "+
+			"(listed in %s and retried on the next run)", ErrPartial, failed, len(paths), pendingFileName)
 	}
 	if err := os.Remove(pathFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return files, fmt.Errorf("não foi possível limpar %s: %w", pathFile, err)
+		return files, converted, fmt.Errorf("cannot clean up %s: %w", pathFile, err)
 	}
-	return files, nil
+	return files, converted, nil
 }
 
-// printedPaths lê os caminhos que o yt-dlp escreveu com --print-to-file, um
-// por linha e sem repetições (a lista de pendentes acumula entre execuções).
-// Um ficheiro inexistente ou vazio (nada descarregado, tudo já no archive)
-// devolve uma lista vazia, não um erro.
+// printedPaths reads the paths yt-dlp wrote with --print-to-file, one per
+// line and without repeats (the pending list builds up across runs). A
+// missing or empty file (nothing downloaded, everything already in the
+// archive) returns an empty list, not an error.
 func printedPaths(pathFile string) []string {
 	data, err := os.ReadFile(pathFile)
 	if err != nil {
@@ -466,8 +468,8 @@ func printedPaths(pathFile string) []string {
 			continue
 		}
 		seen[line] = true
-		// O vídeo pode ter sido removido ou convertido entretanto
-		// (.webm → .mp4): confirmar antes de invocar o ffmpeg.
+		// The video may have been removed or converted since (.webm to
+		// .mp4): check before calling ffmpeg.
 		if _, err := os.Stat(line); err != nil {
 			continue
 		}
@@ -476,8 +478,8 @@ func printedPaths(pathFile string) []string {
 	return paths
 }
 
-// countArchive conta as entradas do ficheiro de archive. Devolve 0 quando o
-// ficheiro não existe (primeira execução) ou não está a ser usado (recorte).
+// countArchive counts the archive entries. It returns 0 when the file does
+// not exist (first run) or is not in use (trims).
 func countArchive(path string) int {
 	if path == "" {
 		return 0

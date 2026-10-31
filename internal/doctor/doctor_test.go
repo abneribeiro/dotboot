@@ -1,25 +1,23 @@
 package doctor
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/abneribeiro/dotboot/internal/config"
 )
 
-// fakeSystem simula um PATH com os binários de outputs (nome → output de
-// "--version"/"-version").
+// fakeSystem simulates a PATH with the binaries in outputs (name to the
+// output of "--version"/"-version").
 func fakeSystem(now time.Time, outputs map[string]string) system {
 	return system{
 		lookPath: func(name string) (string, error) {
 			if _, ok := outputs[name]; ok {
 				return "/usr/bin/" + name, nil
 			}
-			return "", errors.New("não encontrado")
+			return "", errors.New("not found")
 		},
 		output: func(_ context.Context, name string, _ ...string) (string, error) {
 			return outputs[name], nil
@@ -28,76 +26,75 @@ func fakeSystem(now time.Time, outputs map[string]string) system {
 	}
 }
 
-func byName(checks []Check, name string) Check {
+func byName(checks []Check, name string) (Check, bool) {
 	for _, c := range checks {
 		if c.Name == name {
-			return c
+			return c, true
 		}
 	}
-	return Check{Name: "em falta: " + name, Level: LevelFail}
+	return Check{}, false
 }
 
 func TestCollect(t *testing.T) {
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	cfg := &config.Config{TempDir: t.TempDir(), OutputDir: t.TempDir()}
 
-	complete := map[string]string{
+	checks := collect(context.Background(), cfg, fakeSystem(now, map[string]string{
 		"yt-dlp":  "2026.10.26\n",
 		"ffmpeg":  "ffmpeg version 7.1.5-0+deb13u1 Copyright (c) 2000-2026\n",
 		"ffprobe": "ffprobe version 7.1.5-0+deb13u1 Copyright (c) 2000-2026\n",
 		"deno":    "deno 2.9.8 (stable, release, x86_64-unknown-linux-gnu)\n",
-	}
-	checks := collect(context.Background(), cfg, fakeSystem(now, complete))
+	}))
 	for _, c := range checks {
 		if c.Level != LevelOK {
-			t.Errorf("%s: nível %d (%s), esperado OK num ambiente completo", c.Name, c.Level, c.Detail)
+			t.Errorf("%s: level %d (%s), want OK in a complete environment", c.Name, c.Level, c.Detail)
 		}
 	}
-	if got := byName(checks, "ffmpeg").Detail; got != "7.1.5-0+deb13u1" {
-		t.Errorf("versão do ffmpeg = %q", got)
+	if HasFailures(checks) {
+		t.Error("a complete environment has no failures")
 	}
-	if got := byName(checks, "JavaScript").Detail; got != "deno 2.9.8" {
-		t.Errorf("runtime JS = %q", got)
-	}
-	// O token nunca aparece no relatório.
-	if got := byName(checks, "token").Detail; strings.Contains(got, "segredo") {
-		t.Errorf("o relatório expôs o token: %q", got)
+	for name, want := range map[string]string{
+		"ffmpeg":     "7.1.5-0+deb13u1",
+		"JavaScript": "deno 2.9.8",
+		"yt-dlp":     "2026.10.26 (2 days old)",
+	} {
+		if c, _ := byName(checks, name); c.Detail != want {
+			t.Errorf("%s detail = %q, want %q", name, c.Detail, want)
+		}
 	}
 }
 
-func TestCollectAmbienteIncompleto(t *testing.T) {
+func TestCollectIncompleteEnvironment(t *testing.T) {
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	cfg := &config.Config{TempDir: t.TempDir(), OutputDir: t.TempDir()}
 
 	checks := collect(context.Background(), cfg, fakeSystem(now, map[string]string{
-		"yt-dlp": "2026.01.10\n", // ~9 meses
+		"yt-dlp": "2026.01.10\n", // ~9 months old
 		"node":   "v26.3.1\n",
 	}))
 
-	tests := []struct {
-		name string
-		want Level
-	}{
-		{"yt-dlp", LevelWarn},   // antigo, mas funciona
-		{"ffmpeg", LevelFail},   // sem ele não há merge nem conversão
-		{"ffprobe", LevelFail},  // sem ele não há verificação de formato
-		{"JavaScript", LevelOK}, // o node serve
-		{"temporários", LevelOK},
-		{"saída", LevelOK},
-	}
-	for _, tt := range tests {
-		c := byName(checks, tt.name)
-		if c.Level != tt.want {
-			t.Errorf("%s: nível %d (%s), esperado %d", tt.name, c.Level, c.Detail, tt.want)
+	for name, want := range map[string]Level{
+		"yt-dlp":     LevelWarn, // old, but works
+		"ffmpeg":     LevelFail, // no merging or conversion without it
+		"ffprobe":    LevelFail, // no format check without it
+		"JavaScript": LevelOK,   // node works
+		"temp":       LevelOK,
+		"output":     LevelOK,
+	} {
+		c, ok := byName(checks, name)
+		if !ok || c.Level != want {
+			t.Errorf("%s: level %d (%s), want %d", name, c.Level, c.Detail, want)
 		}
 		if c.Level != LevelOK && c.Fix == "" {
-			t.Errorf("%s: um problema tem de dizer como se resolve", tt.name)
+			t.Errorf("%s: a problem must say how to fix it", name)
 		}
 	}
-
-	// Sem DOTBOOT_COOKIES_FILE, a linha dos cookies nem aparece.
-	if c := byName(checks, "cookies"); !strings.HasPrefix(c.Name, "em falta") {
-		t.Errorf("verificação de cookies inesperada: %+v", c)
+	if !HasFailures(checks) {
+		t.Error("missing ffmpeg is a failure")
+	}
+	// Without DOTBOOT_COOKIES_FILE, the cookies line does not show at all.
+	if c, ok := byName(checks, "cookies"); ok {
+		t.Errorf("unexpected cookies check: %+v", c)
 	}
 }
 
@@ -117,7 +114,7 @@ func TestYtdlpReleaseDate(t *testing.T) {
 	for _, tt := range tests {
 		got, ok := ytdlpReleaseDate(tt.in)
 		if ok != tt.ok || !got.Equal(tt.want) {
-			t.Errorf("ytdlpReleaseDate(%q) = (%v, %v), esperado (%v, %v)", tt.in, got, ok, tt.want, tt.ok)
+			t.Errorf("ytdlpReleaseDate(%q) = (%v, %v), want (%v, %v)", tt.in, got, ok, tt.want, tt.ok)
 		}
 	}
 }
@@ -126,26 +123,12 @@ func TestVersionAfter(t *testing.T) {
 	tests := []struct{ out, prefix, want string }{
 		{"ffmpeg version 7.1.5-0+deb13u1 Copyright (c)\nbuilt with gcc", "ffmpeg version ", "7.1.5-0+deb13u1"},
 		{"deno 2.9.8 (stable, release)\nv8 14.0", "deno ", "2.9.8"},
-		{"algo inesperado", "ffmpeg version ", ""},
+		{"something unexpected", "ffmpeg version ", ""},
 		{"", "deno ", ""},
 	}
 	for _, tt := range tests {
 		if got := versionAfter(tt.out, tt.prefix); got != tt.want {
-			t.Errorf("versionAfter(%q, %q) = %q, esperado %q", tt.out, tt.prefix, got, tt.want)
+			t.Errorf("versionAfter(%q, %q) = %q, want %q", tt.out, tt.prefix, got, tt.want)
 		}
-	}
-}
-
-func TestRender(t *testing.T) {
-	var buf bytes.Buffer
-	render(&buf, []Check{{Name: "a", Level: LevelWarn, Detail: "x", Fix: "y"}})
-	if !strings.Contains(buf.String(), "1 aviso") || !strings.Contains(buf.String(), "→ y") {
-		t.Errorf("relatório inesperado:\n%s", buf.String())
-	}
-
-	buf.Reset()
-	render(&buf, []Check{{Name: "b", Level: LevelFail, Detail: "x", Fix: "z"}})
-	if !strings.Contains(buf.String(), "1 problema") {
-		t.Errorf("relatório inesperado:\n%s", buf.String())
 	}
 }

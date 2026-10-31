@@ -1,6 +1,6 @@
-// Package downloader encapsula a invocação do yt-dlp e do ffmpeg. Não conhece
-// a interface (CLI ou TUI): o progresso sai por callbacks e o output por
-// io.Writer, e quem chama decide como os mostrar.
+// Package downloader runs yt-dlp and ffmpeg. It knows nothing about the
+// interface: progress goes out through callbacks and output through
+// io.Writers, and the caller decides how to show them.
 package downloader
 
 import (
@@ -16,17 +16,16 @@ import (
 	"github.com/abneribeiro/dotboot/internal/procio"
 )
 
-// Run executa o yt-dlp com as opções fornecidas. O cancelamento do contexto
-// envia SIGINT (não SIGKILL) para o yt-dlp finalizar os ficheiros .part —
-// é isso que torna o resume (--continue) fiável após interrupções.
+// Run executes yt-dlp with the given options. Canceling the context sends
+// SIGINT (not SIGKILL) so yt-dlp finalizes its .part files: that is what
+// makes resuming (--continue) reliable after an interruption.
 //
-// O stdout é lido linha a linha: com o.Progress definido, as linhas de
-// progresso e as mudanças de fase (ver ParseLine) vão para o callback; as
-// restantes seguem para o.Stdout. O stderr vai para o.Stderr e para um tail
-// que serve para classificar o erro.
+// Stdout is read line by line: with o.Progress set, progress lines and phase
+// changes (see ParseLine) go to the callback and the rest to o.Stdout.
+// Stderr goes to o.Stderr and to a tail used to classify the error.
 func Run(ctx context.Context, o Options) error {
 	args := BuildArgs(o)
-	slog.Debug("a executar yt-dlp", "args", args)
+	slog.Debug("running yt-dlp", "args", args)
 
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
@@ -41,7 +40,7 @@ func Run(ctx context.Context, o Options) error {
 		if o.Progress != nil {
 			if p, ok := ParseLine(line); ok {
 				o.Progress(p)
-				// As linhas do template são só para o callback.
+				// Template lines are only for the callback.
 				if strings.HasPrefix(line, progressMarker) {
 					return
 				}
@@ -58,7 +57,7 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		dlErr := classify(tail.String(), ctx.Err(), err)
 		if dlErr.Kind != ErrCanceled {
-			slog.Debug("yt-dlp falhou", "err", err, "output", procio.Tail(tail.String(), 2048))
+			slog.Debug("yt-dlp failed", "err", err, "output", procio.Tail(tail.String(), 2048))
 		}
 		return dlErr
 	}

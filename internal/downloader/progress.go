@@ -7,38 +7,37 @@ import (
 	"time"
 )
 
-// Phase é a etapa em que o yt-dlp está.
+// Phase is what yt-dlp is doing.
 type Phase int
 
 const (
-	// PhaseInfo: a obter a informação do vídeo, antes de descarregar.
+	// PhaseInfo: fetching the video information, before downloading.
 	PhaseInfo Phase = iota
-	// PhaseDownload: a descarregar um ficheiro (vídeo, áudio ou formato).
+	// PhaseDownload: downloading a file (video, audio or one format).
 	PhaseDownload
-	// PhaseMerge: a juntar vídeo e áudio com o ffmpeg.
+	// PhaseMerge: merging video and audio with ffmpeg.
 	PhaseMerge
-	// PhaseExtract: a extrair/converter o áudio (modo áudio).
+	// PhaseExtract: extracting or converting the audio (audio mode).
 	PhaseExtract
 )
 
-// Progress é um evento do yt-dlp: uma linha de progresso de download ou uma
-// mudança de fase.
+// Progress is a yt-dlp event: a download progress line or a phase change.
 type Progress struct {
 	Phase Phase
-	// Downloaded e Total em bytes; Total 0 quando o site não o diz.
+	// Downloaded and Total in bytes; Total is 0 when the site does not say.
 	Downloaded int64
 	Total      int64
-	// Speed em bytes/s (0 = desconhecida) e ETA (-1 = desconhecido).
+	// Speed in bytes/s (0 = unknown) and ETA (-1 = unknown).
 	Speed float64
 	ETA   time.Duration
-	// File é o ficheiro em que o yt-dlp está a trabalhar, quando a linha o diz.
+	// File is the file yt-dlp is working on, when the line says so.
 	File string
-	// Index e Count: posição numa playlist (0 fora de playlists).
+	// Index and Count: position in a playlist (0 outside playlists).
 	Index int
 	Count int
 }
 
-// Fraction devolve o progresso entre 0 e 1, ou -1 quando o total é desconhecido.
+// Fraction returns the progress between 0 and 1, or -1 when the total is unknown.
 func (p Progress) Fraction() float64 {
 	if p.Total <= 0 {
 		return -1
@@ -46,13 +45,12 @@ func (p Progress) Fraction() float64 {
 	return min(float64(p.Downloaded)/float64(p.Total), 1)
 }
 
-// progressMarker identifica as linhas do --progress-template, para não as
-// confundir com o resto do output.
+// progressMarker tags the --progress-template lines so they are not mistaken
+// for the rest of the output.
 const progressMarker = "dotboot-progress"
 
-// progressTemplate faz o yt-dlp escrever uma linha fácil de interpretar a cada
-// atualização: bytes, total, total estimado, velocidade e ETA ("NA" quando
-// não sabe).
+// progressTemplate makes yt-dlp print an easy-to-parse line on every update:
+// bytes, total, estimated total, speed and ETA ("NA" when unknown).
 const progressTemplate = "download:" + progressMarker +
 	" %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s" +
 	" %(progress.speed)s %(progress.eta)s"
@@ -65,8 +63,8 @@ var (
 	extractLine     = regexp.MustCompile(`^\[ExtractAudio\] Destination: (.+)$`)
 )
 
-// ParseLine interpreta uma linha do stdout do yt-dlp. Devolve ok=false para
-// linhas que não são progresso nem mudança de fase.
+// ParseLine reads one line of yt-dlp's stdout. It returns ok=false for lines
+// that are neither progress nor a phase change.
 func ParseLine(line string) (Progress, bool) {
 	line = strings.TrimSpace(line)
 
@@ -79,7 +77,7 @@ func ParseLine(line string) (Progress, bool) {
 		p.Downloaded = int64(parseNum(f[0]))
 		p.Total = int64(parseNum(f[1]))
 		if p.Total <= 0 {
-			// Os sites com streams fragmentados (HLS/DASH) só dão estimativa.
+			// Sites with fragmented streams (HLS/DASH) only give an estimate.
 			p.Total = int64(parseNum(f[2]))
 		}
 		p.Speed = parseNum(f[3])
@@ -109,7 +107,7 @@ func ParseLine(line string) (Progress, bool) {
 	return Progress{}, false
 }
 
-// parseNum lê um número do template; "NA" ou lixo dá 0.
+// parseNum reads a number from the template; "NA" or junk gives 0.
 func parseNum(s string) float64 {
 	n, err := strconv.ParseFloat(s, 64)
 	if err != nil {

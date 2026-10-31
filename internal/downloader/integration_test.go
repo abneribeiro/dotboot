@@ -1,9 +1,10 @@
 //go:build integration
 
-// Testes que executam mesmo o yt-dlp e o ffmpeg, contra a rede. Ficam fora do
-// "go test ./..." por precisarem dos binários e de ligação à internet:
+// These tests run the real yt-dlp and ffmpeg, against the network. They stay
+// out of "go test ./..." because they need the binaries and an internet
+// connection:
 //
-//	make test-integration-docker   (dentro da imagem)
+//	make test-integration-docker   (inside the image)
 package downloader
 
 import (
@@ -11,88 +12,39 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-// testURLCurto é um vídeo de ~19s, para exercitar o caminho completo sem
-// descarregar um filme inteiro.
-const testURLCurto = "https://www.youtube.com/watch?v=C0DPdy98e4c"
+// testURLShort is a ~19 s video, to exercise the full path without
+// downloading a whole film.
+const testURLShort = "https://www.youtube.com/watch?v=C0DPdy98e4c"
 
-// assertPlayableOnPhones confirma que o ficheiro é H.264 8 bits + AAC dentro de
-// MP4 — o único par que o iPhone, o iOS Fotos e o Android leem sem conversão.
+// assertPlayableOnPhones checks that the file is 8-bit H.264 + AAC in an MP4
+// with the index at the front: what iPhones, iOS Photos and Android read
+// without conversion, and start showing before reading the whole file.
 func assertPlayableOnPhones(t *testing.T, ctx context.Context, path string) {
 	t.Helper()
 
 	vcodec, acodec, pixFmt, err := probeStreams(ctx, path)
 	if err != nil {
-		t.Fatalf("ffprobe falhou em %s: %v", path, err)
+		t.Fatalf("ffprobe failed on %s: %v", path, err)
 	}
 	if !mp4Compatible(filepath.Ext(path), vcodec, acodec, pixFmt) {
-		t.Errorf("%s não é reproduzível num telemóvel: ext=%s vcodec=%s acodec=%s pix_fmt=%s",
+		t.Errorf("%s does not play on phones: ext=%s vcodec=%s acodec=%s pix_fmt=%s",
 			filepath.Base(path), filepath.Ext(path), vcodec, acodec, pixFmt)
 	}
-	// Com o índice (moov) depois dos dados, o iPhone só começa a mostrar o
-	// vídeo depois de o ler todo (ao pré-visualizar ou partilhar).
 	if fast, err := moovFirst(path); err != nil || !fast {
-		t.Errorf("%s: o moov vem depois do mdat (falta o +faststart)", filepath.Base(path))
+		t.Errorf("%s: moov comes after mdat (missing +faststart)", filepath.Base(path))
 	}
 	t.Logf("codecs: %s / %s (%s)", vcodec, acodec, pixFmt)
 }
 
-// TestEnsureMP4MoveOIndice: um MP4 H.264/AAC com o índice no fim (como os
-// recortes, que o yt-dlp recodifica) tem os codecs certos, mas só começa a
-// tocar no iPhone depois de lido todo. O EnsureMP4 faz um remux sem perdas.
-func TestEnsureMP4MoveOIndice(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	source := filepath.Join(t.TempDir(), "sem-faststart.mp4")
-	makeTestVideo(t, ctx, source, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac")
-	if fast, err := moovFirst(source); err != nil || fast {
-		t.Fatalf("o ffmpeg sem +faststart devia pôr o índice no fim (fast=%v, %v)", fast, err)
-	}
-
-	var reencode = true
-	got, err := EnsureMP4(ctx, source, ConvertHooks{Start: func(r bool, _ string) { reencode = r }})
-	if err != nil {
-		t.Fatalf("EnsureMP4 falhou: %v", err)
-	}
-	if got != source || reencode {
-		t.Errorf("devia ser um remux no próprio ficheiro: %s (recodificou: %v)", got, reencode)
-	}
-	assertPlayableOnPhones(t, ctx, got)
-}
-
-// TestEnsureMP4DimensoesImpares: o libx264 com yuv420p recusa larguras e
-// alturas ímpares, que aparecem em vídeos cortados à mão (TikTok,
-// Instagram). A conversão tem de as arredondar em vez de falhar.
-func TestEnsureMP4DimensoesImpares(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	source := filepath.Join(t.TempDir(), "impar.webm")
-	makeTestVideo(t, ctx, source, "-vf", "scale=321:241", "-c:v", "libvpx-vp9", "-b:v", "300k", "-c:a", "libopus")
-
-	got, err := EnsureMP4(ctx, source, ConvertHooks{})
-	if err != nil {
-		t.Fatalf("EnsureMP4 falhou com dimensões ímpares: %v", err)
-	}
-	assertPlayableOnPhones(t, ctx, got)
-	size, err := probe(ctx, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=width,height,profile", "-of", "csv=p=0", got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if size != "High,320,240" && size != "320,240,High" {
-		t.Errorf("perfil e dimensões = %q, esperado High a 320x240", size)
-	}
-}
-
-// makeTestVideo gera localmente um ficheiro com os codecs pedidos. É preferível
-// a descarregar um vídeo real: não depende da rede nem de o YouTube continuar a
-// servir determinado formato, e produz exatamente a combinação a testar.
+// makeTestVideo generates a local file with the requested codecs. It beats
+// downloading a real video: no network, no dependence on what YouTube keeps
+// serving, and exactly the combination under test.
 func makeTestVideo(t *testing.T, ctx context.Context, path string, ffmpegArgs ...string) {
 	t.Helper()
 
@@ -103,21 +55,66 @@ func makeTestVideo(t *testing.T, ctx context.Context, path string, ffmpegArgs ..
 	args = append(args, ffmpegArgs...)
 	args = append(args, "-y", path)
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("não foi possível gerar %s: %v\n%s", path, err, out)
+	if out, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); err != nil {
+		t.Fatalf("cannot generate %s: %v\n%s", path, err, out)
 	}
 }
 
-// TestEnsureMP4RecodificaFonteSemH264 exercita o caso que o -S não resolve: um
-// VP9/Opus, que é o que o YouTube serve acima de 1080p. Também confirma que o
-// progresso do ffmpeg chega aos hooks.
-func TestEnsureMP4RecodificaFonteSemH264(t *testing.T) {
+// A compatible H.264/AAC MP4 with the index at the end (like trims, which
+// yt-dlp re-encodes) only starts playing on an iPhone once fully read.
+// EnsureMP4 remuxes it losslessly, in place.
+func TestEnsureMP4MovesTheIndex(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	source := filepath.Join(t.TempDir(), "no-faststart.mp4")
+	makeTestVideo(t, ctx, source, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac")
+	if fast, err := moovFirst(source); err != nil || fast {
+		t.Fatalf("ffmpeg without +faststart should put the index at the end (fast=%v, %v)", fast, err)
+	}
+
+	reencode := true
+	got, err := EnsureMP4(ctx, source, ConvertHooks{Start: func(r bool, _ string) { reencode = r }})
+	if err != nil {
+		t.Fatalf("EnsureMP4 failed: %v", err)
+	}
+	if got != source || reencode {
+		t.Errorf("expected an in-place remux: %s (re-encoded: %v)", got, reencode)
+	}
+	assertPlayableOnPhones(t, ctx, got)
+}
+
+// libx264 in yuv420p rejects odd widths and heights, which show up in
+// hand-cropped videos (TikTok, Instagram). The conversion rounds them.
+func TestEnsureMP4OddDimensions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	source := filepath.Join(t.TempDir(), "odd.webm")
+	makeTestVideo(t, ctx, source, "-vf", "scale=321:241", "-c:v", "libvpx-vp9", "-b:v", "300k", "-c:a", "libopus")
+
+	got, err := EnsureMP4(ctx, source, ConvertHooks{})
+	if err != nil {
+		t.Fatalf("EnsureMP4 failed with odd dimensions: %v", err)
+	}
+	assertPlayableOnPhones(t, ctx, got)
+	info, err := probe(ctx, "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height,profile", "-of", "csv=p=0", got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info != "High,320,240" && info != "320,240,High" {
+		t.Errorf("profile and size = %q, want High at 320x240", info)
+	}
+}
+
+// The case -S cannot fix: VP9/Opus, which is what YouTube serves above
+// 1080p. It also checks that ffmpeg's progress reaches the hooks.
+func TestEnsureMP4ReencodesNonH264(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	dir := t.TempDir()
-	source := filepath.Join(dir, "so-vp9.webm")
+	source := filepath.Join(t.TempDir(), "vp9.webm")
 	makeTestVideo(t, ctx, source, "-c:v", "libvpx-vp9", "-b:v", "300k", "-c:a", "libopus")
 
 	var started, reencode bool
@@ -127,81 +124,70 @@ func TestEnsureMP4RecodificaFonteSemH264(t *testing.T) {
 		Progress: func(f float64) { last = f },
 	})
 	if err != nil {
-		t.Fatalf("EnsureMP4 falhou: %v", err)
+		t.Fatalf("EnsureMP4 failed: %v", err)
 	}
 	assertPlayableOnPhones(t, ctx, got)
 	if _, err := os.Stat(source); err == nil {
-		t.Errorf("o .webm original %s devia ter sido removido", source)
+		t.Errorf("the original %s should have been removed", source)
 	}
 	if !started || !reencode {
-		t.Errorf("Start devia anunciar uma recodificação (started=%v reencode=%v)", started, reencode)
+		t.Errorf("Start should announce a re-encode (started=%v reencode=%v)", started, reencode)
 	}
 	if last < 0.9 {
-		t.Errorf("o progresso devia chegar perto de 1, ficou em %v", last)
+		t.Errorf("progress should get close to 1, got %v", last)
+	}
+	if d := Describe(ctx, got); d != "H.264 · 320×240" {
+		t.Errorf("Describe = %q", d)
 	}
 }
 
-// TestEnsureMP4Recodifica10Bits fixa a armadilha do pixel format: um AV1/VP9 a
-// 10 bits convertido sem -pix_fmt dá H.264 High10, que tem os codecs certos e
-// mesmo assim não abre num iPhone.
-func TestEnsureMP4Recodifica10Bits(t *testing.T) {
+// The pixel format trap: a 10-bit source converted without -pix_fmt becomes
+// H.264 High10, which has the right codecs and still does not open on an
+// iPhone.
+func TestEnsureMP4Reencodes10Bit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	dir := t.TempDir()
-	source := filepath.Join(dir, "dez-bits.mp4")
+	source := filepath.Join(t.TempDir(), "10bit.mp4")
 	makeTestVideo(t, ctx, source, "-c:v", "libx264", "-pix_fmt", "yuv420p10le", "-c:a", "aac")
 
 	got, err := EnsureMP4(ctx, source, ConvertHooks{})
 	if err != nil {
-		t.Fatalf("EnsureMP4 falhou: %v", err)
-	}
-	_, _, pixFmt, err := probeStreams(ctx, got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pixFmt != mp4PixFmt {
-		t.Errorf("pix_fmt = %q, esperado %q", pixFmt, mp4PixFmt)
+		t.Fatalf("EnsureMP4 failed: %v", err)
 	}
 	assertPlayableOnPhones(t, ctx, got)
 }
 
-// TestEnsureMP4RemuxaSemPerdas verifica o caminho barato: quando os codecs já
-// estão certos e só o contentor está errado, o ficheiro é remuxado em segundos.
-func TestEnsureMP4RemuxaSemPerdas(t *testing.T) {
+// The cheap path: right codecs in the wrong container are remuxed in seconds,
+// and a second run over a compliant file changes nothing.
+func TestEnsureMP4RemuxesLosslessly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dir := t.TempDir()
-	source := filepath.Join(dir, "fonte.mkv")
+	source := filepath.Join(t.TempDir(), "source.mkv")
 	makeTestVideo(t, ctx, source, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac")
 
 	got, err := EnsureMP4(ctx, source, ConvertHooks{})
 	if err != nil {
-		t.Fatalf("EnsureMP4 falhou: %v", err)
+		t.Fatalf("EnsureMP4 failed: %v", err)
 	}
 	if filepath.Ext(got) != ".mp4" {
-		t.Errorf("EnsureMP4 = %q, esperado um .mp4", got)
+		t.Errorf("EnsureMP4 = %q, want an .mp4", got)
 	}
 	if _, err := os.Stat(source); err == nil {
-		t.Errorf("o ficheiro original %s devia ter sido removido", source)
+		t.Errorf("the original %s should have been removed", source)
 	}
 	assertPlayableOnPhones(t, ctx, got)
 
-	// Idempotência: correr outra vez sobre um ficheiro já conforme não pode
-	// tocar em nada.
 	again, err := EnsureMP4(ctx, got, ConvertHooks{})
-	if err != nil {
-		t.Fatalf("EnsureMP4 (2ª passagem) falhou: %v", err)
-	}
-	if again != got {
-		t.Errorf("EnsureMP4 devolveu %q na 2ª passagem, esperado o mesmo %q", again, got)
+	if err != nil || again != got {
+		t.Errorf("second pass = %q, %v; want %q untouched", again, err, got)
 	}
 }
 
-// TestRunReportaProgresso descarrega um vídeo real e confirma que o
-// --progress-template chega ao callback: é disto que a barra da TUI depende.
-func TestRunReportaProgresso(t *testing.T) {
+// A real download must feed the --progress-template lines to the callback:
+// the progress bar depends on it.
+func TestRunReportsProgress(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -209,9 +195,8 @@ func TestRunReportaProgresso(t *testing.T) {
 	var mu sync.Mutex
 	var updates int
 	var maxFrac float64
-	var merged bool
 	err := Run(ctx, Options{
-		URLs:           []string{testURLCurto},
+		URLs:           []string{testURLShort},
 		FormatSort:     MP4Sort("res:360"),
 		MergeFormat:    "mp4",
 		OutputTemplate: filepath.Join(dir, "%(id)s.%(ext)s"),
@@ -219,9 +204,6 @@ func TestRunReportaProgresso(t *testing.T) {
 		Progress: func(p Progress) {
 			mu.Lock()
 			defer mu.Unlock()
-			if p.Phase == PhaseMerge {
-				merged = true
-			}
 			if f := p.Fraction(); f >= 0 {
 				updates++
 				maxFrac = max(maxFrac, f)
@@ -229,16 +211,18 @@ func TestRunReportaProgresso(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("Run falhou: %v", err)
+		t.Fatalf("Run failed: %v", err)
 	}
 	if updates == 0 || maxFrac < 0.99 {
-		t.Errorf("progresso insuficiente: %d atualizações, máximo %v", updates, maxFrac)
+		t.Errorf("not enough progress: %d updates, max %v", updates, maxFrac)
 	}
-	t.Logf("%d atualizações de progresso, merge=%v", updates, merged)
 
 	files, _ := filepath.Glob(filepath.Join(dir, "*.mp4"))
 	if len(files) != 1 {
-		t.Fatalf("esperava um .mp4, há %v", files)
+		t.Fatalf("want one .mp4, got %v", files)
 	}
 	assertPlayableOnPhones(t, ctx, files[0])
+	if d := Describe(ctx, files[0]); !strings.HasPrefix(d, "H.264 · ") {
+		t.Errorf("Describe = %q", d)
+	}
 }
