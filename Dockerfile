@@ -1,37 +1,37 @@
 # ============================================================
-# Multi-stage Dockerfile: uma só imagem com tudo (dotboot:latest)
+# Multi-stage Dockerfile: one image with everything (dotboot:latest)
 # ============================================================
 #
-# As imagens base estão escritas por extenso nos FROM (sem ARG) para o
-# Dependabot as conseguir atualizar.
+# Base images are written out in the FROM lines (no ARG) so Dependabot can
+# update them.
 
 # ============================================================
-# Base stage: dependências Go (camada em cache)
+# Base stage: Go dependencies (cached layer)
 # ============================================================
 FROM golang:1.27-alpine AS base
 
-# Permite que o Go descarregue automaticamente a versão do toolchain
+# Lets Go download the toolchain version go.mod asks for.
 ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
 
-# Copia os ficheiros de dependências primeiro para aproveitar
-# o cache de camadas do Docker (só reinstala se mudarem).
+# Copy the dependency files first to use Docker's layer cache (modules are
+# only downloaded again when they change).
 COPY go.mod go.sum ./
 RUN go mod download
 
 # ============================================================
-# Builder stage: binário estático
+# Builder stage: static binary
 # ============================================================
 FROM base AS builder
 
-# Versão embutida no binário (dotboot version); o Makefile passa o git describe.
+# Version embedded in the binary (dotboot version); the Makefile passes git describe.
 ARG VERSION=dev
 ARG COMMIT=
 ARG DATE=
 
-# CGO_ENABLED=0 garante um binário sem dependências de C,
-# compatível com qualquer imagem Linux.
+# CGO_ENABLED=0 builds a binary with no C dependencies, which runs on any
+# Linux image.
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 RUN CGO_ENABLED=0 go build -trimpath \
@@ -39,29 +39,29 @@ RUN CGO_ENABLED=0 go build -trimpath \
         -o /dotboot ./cmd/dotboot
 
 # ============================================================
-# Tools stage: yt-dlp verificado
+# Tools stage: verified yt-dlp
 # ============================================================
 FROM debian:trixie-slim AS tools
 
 ARG TARGETARCH
 
-# O yt-dlp parte sempre que o YouTube muda: é a dependência que envelhece mais
-# depressa nesta imagem. Está fixado (builds reprodutíveis) e verificado contra
-# o SHA2-256SUMS da própria release. `make update-ytdlp` reescreve esta linha
-# com a última versão e reconstrói a imagem.
+# yt-dlp breaks whenever YouTube changes: it is the dependency that ages
+# fastest in this image. It is pinned (reproducible builds) and verified
+# against the release's own SHA2-256SUMS. `make update-ytdlp` rewrites this
+# line with the latest version and rebuilds the image.
 ARG YTDLP_VERSION=2026.10.26
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-# O binário standalone é auto-contido (dispensa Python) e já traz o yt-dlp-ejs,
-# os scripts que resolvem os desafios JavaScript do YouTube.
+# The standalone binary is self-contained (no Python needed) and ships
+# yt-dlp-ejs, the scripts that solve YouTube's JavaScript challenges.
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
         amd64) asset=yt-dlp_linux ;; \
         arm64) asset=yt-dlp_linux_aarch64 ;; \
-        *) echo "arquitetura não suportada: ${TARGETARCH}" >&2; exit 1 ;; \
+        *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     release="https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}"; \
     cd /tmp; \
@@ -72,18 +72,18 @@ RUN set -eux; \
     /usr/local/bin/yt-dlp --version
 
 # ============================================================
-# Deno stage: runtime JavaScript do yt-dlp
+# Deno stage: yt-dlp's JavaScript runtime
 # ============================================================
-# Desde 2025.11 o yt-dlp precisa de um runtime JS para resolver os desafios
-# do YouTube; sem ele há menos formatos ou erros. O Deno é o que o yt-dlp usa
-# por omissão, sem nenhuma flag.
+# Since 2025.11 yt-dlp needs a JS runtime to solve YouTube's challenges;
+# without one there are fewer formats or errors. Deno is what yt-dlp uses
+# by default, with no flag.
 FROM denoland/deno:bin-2.9.8 AS deno
 
 # ============================================================
-# App stage: a imagem final (TUI e downloads)
+# App stage: the final image
 # ============================================================
-# Só o que os downloads precisam: o ffmpeg (juntar vídeo e áudio, garantir o
-# MP4), o yt-dlp, o deno e o binário.
+# Only what downloads need: ffmpeg (merging and the MP4 guarantee), yt-dlp,
+# deno and the binary.
 FROM debian:trixie-slim AS app
 
 RUN apt-get update && \
@@ -94,14 +94,14 @@ COPY --from=tools /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
 COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=builder /dotboot /dotboot
 
-# O wrapper corre o container com o uid de quem o chama; este utilizador só
-# serve quando a imagem corre sem --user.
+# The wrapper runs the container as the calling user; this user only applies
+# when the image runs without --user.
 RUN useradd --system --uid 10001 --create-home --home-dir /home/dotboot dotboot
-# DOTBOOT_DOCKER: os erros de pasta explicam o que o wrapper monta.
+# DOTBOOT_DOCKER: folder errors explain what the wrapper mounts.
 ENV DOTBOOT_DOCKER=1
 
 USER dotboot
 WORKDIR /home/dotboot
 
-# Sem argumentos abre a TUI (com -it); ex: docker run --rm -it dotboot:latest
+# e.g. docker run --rm -t dotboot:latest video https://youtu.be/xxxx
 ENTRYPOINT ["/dotboot"]

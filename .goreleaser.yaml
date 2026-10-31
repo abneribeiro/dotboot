@@ -1,6 +1,6 @@
-# GoReleaser: binários do dotboot para cada sistema, publicados como release
-# do GitHub quando se envia uma tag vX.Y.Z (ver .github/workflows/release.yml).
-# Localmente, sem publicar nada: make release-snapshot.
+# GoReleaser: dotboot binaries for every system, published as a GitHub
+# release when a vX.Y.Z tag is pushed (see .github/workflows/release.yml).
+# Locally, without publishing: make release-snapshot.
 version: 2
 
 project_name: dotboot
@@ -28,10 +28,10 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    # O scripts/install.sh conta com este nome.
+    # scripts/install.sh relies on this name.
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    # O install-deps.sh vai no archive para o install.sh instalar o yt-dlp,
-    # o deno e o ffmpeg sem precisar do repositório.
+    # install-deps.sh ships in the archive so install.sh can install yt-dlp,
+    # deno and ffmpeg without the repository.
     files:
       - README.md
       - .env.example

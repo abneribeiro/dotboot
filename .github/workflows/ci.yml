@@ -31,11 +31,11 @@ jobs:
           go vet ./...
           go vet -tags integration ./...
 
-      - name: Testes
+      - name: Tests
         run: go test -race ./...
 
-      # O GoReleaser compila para estes sistemas; partir um deles só se veria
-      # no dia da release.
+      # GoReleaser builds for these systems; breaking one would only show on
+      # release day.
       - name: Cross-compile
         run: |
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
@@ -43,17 +43,17 @@ jobs:
             GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 go build -o /dev/null ./cmd/dotboot
           done
 
-      - name: Scripts de instalação
+      - name: Install scripts
         run: shellcheck scripts/*.sh scripts/dotboot-docker
 
   docker:
-    # Só na main: a imagem demora a construir e um PR raramente mexe nela.
+    # Only on main: the image takes a while to build and PRs rarely touch it.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
-      - name: Imagem (dotboot:latest)
+      - name: Image (dotboot:latest)
         uses: docker/build-push-action@v7
         with:
           context: .

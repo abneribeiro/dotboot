@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Instala as dependências da CLI nativa do dotboot:
-#   - yt-dlp e deno em BINDIR (default ~/.local/bin), sem sudo, verificados
-#     pelo checksum publicado em cada release;
-#   - ffmpeg/ffprobe pelo gestor de pacotes do sistema (pede confirmação
-#     antes de usar o sudo).
+# Installs the native dotboot's dependencies:
+#   - yt-dlp and deno into BINDIR (default ~/.local/bin), without sudo,
+#     verified against the checksum each release publishes;
+#   - ffmpeg/ffprobe with the system's package manager (asks before using
+#     sudo).
 #
 #   scripts/install-deps.sh [--check] [--yes]
 #
-# Versões: YTDLP_VERSION (default latest) e DENO_VERSION podem ser fixadas
-# pelo ambiente.
+# Versions: YTDLP_VERSION (default latest) and DENO_VERSION can be pinned
+# through the environment.
 set -euo pipefail
 
 YTDLP_VERSION=${YTDLP_VERSION:-latest}
@@ -26,17 +26,17 @@ for arg in "$@"; do
 		exit 0
 		;;
 	*)
-		echo "opção desconhecida: $arg" >&2
+		echo "unknown option: $arg" >&2
 		exit 2
 		;;
 	esac
 done
 
 have() { command -v "$1" >/dev/null 2>&1; }
-ok() { printf '  ✅ %s\n' "$*"; }
-warn() { printf '  ⚠️  %s\n' "$*"; }
-fail() { printf '  ❌ %s\n' "$*"; }
-step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+ok() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; }
+step() { printf '\n\033[1;31m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 
 confirm() {
 	local answer
@@ -46,8 +46,8 @@ confirm() {
 	if [ ! -t 0 ]; then
 		return 1
 	fi
-	read -r -p "$1 [S/n] " answer
-	case "${answer:-s}" in [sSyY]*) return 0 ;; *) return 1 ;; esac
+	read -r -p "$1 [Y/n] " answer
+	case "${answer:-y}" in [yY]*) return 0 ;; *) return 1 ;; esac
 }
 
 sha256() {
@@ -58,21 +58,21 @@ sha256() {
 	fi
 }
 
-# verify FICHEIRO HASH_ESPERADO — aborta se o download não corresponder ao
-# checksum publicado (download corrompido ou adulterado).
+# verify FILE EXPECTED_HASH aborts when the download does not match the
+# published checksum (corrupted or tampered download).
 verify() {
 	local actual
 	actual=$(sha256 "$1")
 	if [ -z "$2" ] || [ "$actual" != "$2" ]; then
-		fail "checksum inválido para $(basename "$1") (esperado ${2:-?}, obtido $actual)"
+		fail "bad checksum for $(basename "$1") (expected ${2:-?}, got $actual)"
 		exit 1
 	fi
 }
 
 download() { curl -fsSL --retry 3 -o "$2" "$1"; }
 
-# unzip_to ZIP DIR — usa o unzip quando existe; senão o Python, que vem em
-# quase todos os sistemas (o Ubuntu mínimo não traz unzip).
+# unzip_to ZIP DIR uses unzip when available, otherwise Python, which almost
+# every system has (minimal Ubuntu has no unzip).
 unzip_to() {
 	if have unzip; then
 		unzip -q -o "$1" -d "$2"
@@ -101,7 +101,7 @@ Darwin/x86_64)
 	triple=x86_64-apple-darwin
 	;;
 *)
-	echo "Sistema não suportado por este script: $os/$arch. Instala yt-dlp, deno e ffmpeg à mão." >&2
+	echo "Unsupported system: $os/$arch. Install yt-dlp, deno and ffmpeg by hand." >&2
 	exit 1
 	;;
 esac
@@ -111,10 +111,10 @@ trap 'rm -rf "$tmp"' EXIT
 
 report() {
 	local missing=0
-	# O que acabou de ser instalado em BINDIR conta, mesmo que BINDIR ainda
-	# não esteja no PATH desta shell (o path_hint já avisou).
+	# What was just installed into BINDIR counts, even if BINDIR is not on
+	# this shell's PATH yet (path_hint already warned).
 	PATH="$BINDIR:$PATH"
-	step "Dependências"
+	step "Dependencies"
 	if have yt-dlp; then ok "yt-dlp $(yt-dlp --version 2>/dev/null | head -n 1)"; else fail "yt-dlp"; missing=1; fi
 	if have ffmpeg && have ffprobe; then
 		ok "$(ffmpeg -version 2>/dev/null | head -n 1 | cut -d' ' -f1-3)"
@@ -125,9 +125,9 @@ report() {
 	if have deno; then
 		ok "$(deno --version 2>/dev/null | head -n 1)"
 	elif have node; then
-		ok "node $(node --version) (o deno é o recomendado pelo yt-dlp)"
+		ok "node $(node --version) (yt-dlp recommends deno)"
 	else
-		warn "nenhum runtime JavaScript (deno/node): o YouTube terá menos formatos"
+		warn "no JavaScript runtime (deno or node): YouTube will offer fewer formats"
 	fi
 	return "$missing"
 }
@@ -136,15 +136,15 @@ path_hint() {
 	case ":$PATH:" in
 	*":$BINDIR:"*) ;;
 	*)
-		warn "$BINDIR não está no PATH. Acrescenta ao ~/.zshrc ou ~/.bashrc:"
+		warn "$BINDIR is not on your PATH. Add this to ~/.zshrc or ~/.bashrc:"
 		echo "       export PATH=\"$BINDIR:\$PATH\""
 		;;
 	esac
 }
 
 install_ytdlp() {
-	# Um yt-dlp instalado pelo apt costuma estar meses atrasado — e o
-	# YouTube parte as versões antigas. O binário oficial atualiza-se sozinho.
+	# A yt-dlp from apt is usually months behind, and YouTube breaks old
+	# versions. The official binary updates itself.
 	local base
 	if [ "$YTDLP_VERSION" = latest ]; then
 		base="https://github.com/yt-dlp/yt-dlp/releases/latest/download"
@@ -155,7 +155,7 @@ install_ytdlp() {
 	download "$base/SHA2-256SUMS" "$tmp/SHA2-256SUMS"
 	verify "$tmp/$ytdlp_asset" "$(awk -v f="$ytdlp_asset" '$2 == f {print $1}' "$tmp/SHA2-256SUMS")"
 	install -m 0755 "$tmp/$ytdlp_asset" "$BINDIR/yt-dlp"
-	ok "yt-dlp $("$BINDIR/yt-dlp" --version) em $BINDIR"
+	ok "yt-dlp $("$BINDIR/yt-dlp" --version) in $BINDIR"
 }
 
 install_deno() {
@@ -167,7 +167,7 @@ install_deno() {
 	mkdir -p "$tmp/deno"
 	unzip_to "$tmp/$zip" "$tmp/deno"
 	install -m 0755 "$tmp/deno/deno" "$BINDIR/deno"
-	ok "$("$BINDIR/deno" --version | head -n 1) em $BINDIR"
+	ok "$("$BINDIR/deno" --version | head -n 1) in $BINDIR"
 }
 
 install_ffmpeg() {
@@ -181,16 +181,16 @@ install_ffmpeg() {
 	elif have brew; then
 		cmd="brew install ffmpeg"
 	elif have dnf; then
-		# O ffmpeg-free do Fedora não traz o x264, de que as conversões
-		# para MP4 precisam: é preciso o do RPM Fusion.
-		warn "No Fedora instala o ffmpeg do RPM Fusion: https://rpmfusion.org/Howto/Multimedia"
+		# Fedora's ffmpeg-free has no x264, which the MP4 conversions need:
+		# RPM Fusion's build is required.
+		warn "On Fedora, install ffmpeg from RPM Fusion: https://rpmfusion.org/Howto/Multimedia"
 		return 1
 	else
-		warn "Gestor de pacotes não reconhecido: instala o ffmpeg à mão (https://ffmpeg.org/download.html)."
+		warn "Unknown package manager: install ffmpeg by hand (https://ffmpeg.org/download.html)."
 		return 1
 	fi
-	if ! confirm "Instalar o ffmpeg com: $cmd ?"; then
-		warn "ffmpeg por instalar. Corre: $cmd"
+	if ! confirm "Install ffmpeg with: $cmd ?"; then
+		warn "ffmpeg not installed. Run: $cmd"
 		return 1
 	fi
 	eval "$cmd"
@@ -207,9 +207,9 @@ mkdir -p "$BINDIR"
 step "yt-dlp"
 install_ytdlp
 
-step "Deno (runtime JavaScript que o yt-dlp usa no YouTube)"
+step "Deno (the JavaScript runtime yt-dlp uses for YouTube)"
 if have deno && [ "$(command -v deno)" != "$BINDIR/deno" ]; then
-	ok "já instalado: $(deno --version | head -n 1)"
+	ok "already installed: $(deno --version | head -n 1)"
 else
 	install_deno
 fi
@@ -217,7 +217,7 @@ fi
 step "ffmpeg"
 ffmpeg_ok=1
 if have ffmpeg && have ffprobe; then
-	ok "já instalado: $(ffmpeg -version | head -n 1 | cut -d' ' -f1-3)"
+	ok "already installed: $(ffmpeg -version | head -n 1 | cut -d' ' -f1-3)"
 else
 	install_ffmpeg || ffmpeg_ok=0
 fi

@@ -1,18 +1,11 @@
-# Variáveis de ambiente (contém o token secreto do bot)
+# Environment variables
 .env
 
-# Binários compilados
+# Compiled binaries
 /dotboot
 /cmd/dotboot/dotboot
 
-# Docker
-docker-compose.override.yml
-
-# Air live reload (desenvolvimento)
-tmp/
-build-errors.log
-
-# Build e releases (make build, make release-snapshot)
+# Builds and releases (make build, make release-snapshot)
 /bin/
 /dist/
 coverage.out
