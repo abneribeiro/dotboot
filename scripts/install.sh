@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Instala a última release do dotboot (o binário da CLI/bot) sem clonar o repo.
+# Installs the latest dotboot release without cloning the repository.
 #
-# Com o repo privado, através do gh autenticado (gh auth login):
+# While the repository is private, through an authenticated gh (gh auth login):
 #   gh api repos/abneribeiro/dotboot/contents/scripts/install.sh \
 #     -H 'Accept: application/vnd.github.raw' | bash
 #
-# Quando o repo for público:
+# Once the repository is public:
 #   curl -fsSL https://raw.githubusercontent.com/abneribeiro/dotboot/main/scripts/install.sh | bash
 #
-# Variáveis: DOTBOOT_VERSION (tag, default a última release), BINDIR (default
-# ~/.local/bin), DOTBOOT_DEPS=1 para instalar logo yt-dlp, deno e ffmpeg.
+# Variables: DOTBOOT_VERSION (tag, default the latest release), BINDIR
+# (default ~/.local/bin), DOTBOOT_DEPS=1 to install yt-dlp, deno and ffmpeg too.
 set -euo pipefail
 
 REPO=abneribeiro/dotboot
@@ -22,7 +22,7 @@ case "$(uname -s)" in
 Linux) os=linux ;;
 Darwin) os=darwin ;;
 *)
-	echo "Sistema não suportado: $(uname -s). No Windows, descarrega o .zip da página de releases." >&2
+	echo "Unsupported system: $(uname -s). On Windows, download the .zip from the releases page." >&2
 	exit 1
 	;;
 esac
@@ -30,7 +30,7 @@ case "$(uname -m)" in
 x86_64 | amd64) arch=amd64 ;;
 aarch64 | arm64) arch=arm64 ;;
 *)
-	echo "Arquitetura não suportada: $(uname -m)" >&2
+	echo "Unsupported architecture: $(uname -m)" >&2
 	exit 1
 	;;
 esac
@@ -45,13 +45,13 @@ if have gh && gh auth status >/dev/null 2>&1; then
 	asset="dotboot_${version#v}_${os}_${arch}.tar.gz"
 	gh release download "$version" -R "$REPO" -D "$tmp" -p "$asset" -p checksums.txt
 else
-	# Sem gh só dá para repos públicos: os assets de um repo privado exigem a API autenticada.
+	# Without gh this only works for public repositories: private assets need the authenticated API.
 	if [ -z "$version" ]; then
 		version=$(curl -fsSI "https://github.com/$REPO/releases/latest" | tr -d '\r' |
 			grep -i '^location:' | sed 's#.*/tag/##') || true
 	fi
 	if [ -z "$version" ]; then
-		echo "Não foi possível encontrar a última release. Com o repo privado, instala e autentica o gh (gh auth login)." >&2
+		echo "Cannot find the latest release. While the repository is private, install and authenticate gh (gh auth login)." >&2
 		exit 1
 	fi
 	asset="dotboot_${version#v}_${os}_${arch}.tar.gz"
@@ -66,28 +66,28 @@ else
 	actual=$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')
 fi
 if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-	echo "Checksum inválido para $asset: o download está corrompido ou foi adulterado." >&2
+	echo "Bad checksum for $asset: the download is corrupted or was tampered with." >&2
 	exit 1
 fi
 
 tar -xzf "$tmp/$asset" -C "$tmp"
 mkdir -p "$BINDIR"
 install -m 0755 "$tmp/dotboot" "$BINDIR/dotboot"
-echo "✅ $("$BINDIR/dotboot" version) instalado em $BINDIR"
+echo "✓ dotboot $("$BINDIR/dotboot" version) installed in $BINDIR"
 
 case ":$PATH:" in
 *":$BINDIR:"*) ;;
-*) echo "⚠️  Acrescenta $BINDIR ao PATH: export PATH=\"$BINDIR:\$PATH\"" ;;
+*) echo "! Add $BINDIR to your PATH: export PATH=\"$BINDIR:\$PATH\"" ;;
 esac
 
-# As dependências (yt-dlp, deno, ffmpeg): o script vem no próprio archive.
-# Quando corre via "| bash" o stdin é o script, por isso pergunta-se ao /dev/tty.
+# The dependencies (yt-dlp, deno, ffmpeg): the script ships in the archive.
+# When run through "| bash", stdin is the script, so the question goes to /dev/tty.
 want_deps=${DOTBOOT_DEPS:-}
 if [ -z "$want_deps" ]; then
 	if ! have yt-dlp || ! have ffmpeg; then
-		printf "Instalar agora yt-dlp, deno e ffmpeg? [S/n] " >/dev/tty 2>/dev/null || true
+		printf "Install yt-dlp, deno and ffmpeg now? [Y/n] " >/dev/tty 2>/dev/null || true
 		if read -r answer </dev/tty 2>/dev/null; then
-			case "${answer:-s}" in [sSyY]*) want_deps=1 ;; esac
+			case "${answer:-y}" in [yY]*) want_deps=1 ;; esac
 		fi
 	fi
 fi

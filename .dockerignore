@@ -1,51 +1,33 @@
-# Environment files (contain secrets)
+# Environment files (may hold secrets)
 .env
 .env.*
 
-# Git and version control
+# Version control
 .git
 .gitignore
 
-# Compiled binaries
+# Compiled binaries and build output
 dotboot
 *.exe
-*.dll
-*.so
-*.dylib
-
-# Documentation
-*.md
-
-# Temporary files
-tmp/
-*.tmp
-*.log
-build-errors.log
-
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Docker files (to avoid recursive copying)
-Dockerfile*
-docker-compose*.yml
-
-# Go build artifacts
-vendor/
 *.test
-*.prof
 bin/
 dist/
 coverage.out
 
-# Instalação e CI (não entram na imagem)
+# Documentation
+*.md
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Docker files
+Dockerfile*
+
+# Install and CI files (not part of the image)
 scripts/
 .github/
 Makefile

@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Assistente pós-clone (make setup): deixa o dotboot pronto a usar.
+# Guided setup after cloning (make setup): leaves dotboot ready to use.
 #
-#   make setup                     pergunta o que fazer em cada passo
-#   make setup YES=1 CLI=docker    sem perguntas (CLI=native|docker)
+#   make setup                         asks at each step
+#   make setup YES=1 INSTALL=docker    no questions (INSTALL=docker|native)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 BINDIR=${BINDIR:-$HOME/.local/bin}
-IMAGE=${IMAGE:-dotboot:latest}
 YES=${YES:-0}
 interactive=1
 if [ "$YES" = 1 ] || [ ! -t 0 ]; then
@@ -16,48 +15,48 @@ if [ "$YES" = 1 ] || [ ! -t 0 ]; then
 fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
-step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+step() { printf '\n\033[1;31m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 
-step "1/4 Pré-requisitos"
+step "1/4 Requirements"
 docker_ok=0
 if have docker && docker info >/dev/null 2>&1; then
 	docker_ok=1
-	echo "  ✅ $(docker --version)"
+	echo "  ✓ $(docker --version)"
 else
-	echo "  ℹ️  Docker não encontrado (ou sem permissão): só é preciso para a instalação via Docker."
+	echo "  - Docker not found (or no permission): only needed for the Docker install."
 fi
 go_ok=0
 if have go; then
 	go_ok=1
-	echo "  ✅ $(go version)"
+	echo "  ✓ $(go version)"
 else
-	echo "  ℹ️  Go não encontrado: só é preciso para compilar a instalação nativa (https://go.dev/dl/)."
+	echo "  - Go not found: only needed to build the native install (https://go.dev/dl/)."
 fi
 
-step "2/4 Instalação"
-cli=${CLI:-}
-if [ -z "$cli" ]; then
-	# Docker por omissão: traz tudo sem instalar nada no sistema.
+step "2/4 Install"
+mode=${INSTALL:-}
+if [ -z "$mode" ]; then
+	# Docker by default: it brings everything without installing anything.
 	default=native
 	if [ "$docker_ok" = 1 ]; then
 		default=docker
 	fi
-	cli=$default
+	mode=$default
 	if [ "$interactive" = 1 ]; then
-		echo "  1) docker  tudo numa imagem (~1GB); nada instalado no sistema"
-		echo "  2) native  binário em $BINDIR + yt-dlp, deno e ffmpeg no sistema (precisa de Go)"
-		read -r -p "Como queres instalar? [$default] " answer
+		echo "  1) docker  everything in one image (~1GB); nothing installed on the system"
+		echo "  2) native  binary in $BINDIR plus yt-dlp, deno and ffmpeg on the system (needs Go)"
+		read -r -p "How do you want to install? [$default] " answer
 		case "${answer:-$default}" in
-		1 | docker) cli=docker ;;
-		2 | native) cli=native ;;
+		1 | docker) mode=docker ;;
+		2 | native) mode=native ;;
 		esac
 	fi
 fi
 
-case "$cli" in
+case "$mode" in
 docker)
 	if [ "$docker_ok" = 0 ]; then
-		echo "  ❌ A instalação via Docker precisa do Docker (https://docs.docker.com/get-docker/)." >&2
+		echo "  ✗ The Docker install needs Docker (https://docs.docker.com/get-docker/)." >&2
 		exit 1
 	fi
 	make docker-build
@@ -65,25 +64,32 @@ docker)
 	;;
 native)
 	if [ "$go_ok" = 0 ]; then
-		echo "  ❌ A instalação nativa precisa do Go. Instala-o ou usa CLI=docker." >&2
+		echo "  ✗ The native install needs Go. Install it or use INSTALL=docker." >&2
 		exit 1
 	fi
 	make deps
 	make install
 	;;
 *)
-	echo "  CLI inválida: $cli (usa docker ou native)" >&2
+	echo "  ✗ Unknown install mode: $mode (use docker or native)" >&2
 	exit 2
 	;;
 esac
 
-step "3/4 Configuração"
-scripts/configure-env.sh
+step "3/4 Output folder"
+if [ "$interactive" = 1 ]; then
+	read -r -p "Where should downloads go? (empty = the current folder each time) " output
+	if [ -n "$output" ]; then
+		"$BINDIR/dotboot" config output "$output"
+	fi
+else
+	echo "  Skipped. Set it later with: dotboot config output <folder>"
+fi
 
-step "4/4 Diagnóstico"
-# O doctor sai com 1 quando falta algo: o relatório já diz o quê.
+step "4/4 Doctor"
+# doctor exits with 1 when something is missing: the report says what.
 "$BINDIR/dotboot" doctor || true
 
 echo
-echo "Pronto. Abre a interface com: dotboot"
-echo "(se o comando não for encontrado, acrescenta $BINDIR ao PATH)"
+echo "Done. Try: dotboot video https://youtu.be/xxxx"
+echo "(if the command is not found, add $BINDIR to your PATH)"

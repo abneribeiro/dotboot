@@ -1,6 +1,5 @@
-# Mantém atualizadas as dependências Go, as actions e as imagens base do
-# Dockerfile. O yt-dlp, por ser um binário descarregado, atualiza-se com
-# `make update-ytdlp`.
+# Keeps the Go dependencies, the actions and the Dockerfile's base images up
+# to date. yt-dlp, a downloaded binary, is updated with `make update-ytdlp`.
 version: 2
 updates:
   - package-ecosystem: gomod

@@ -1,27 +1,18 @@
 #!/usr/bin/env bash
-# dotboot (via Docker) — corre o dotboot dentro de um container, sem yt-dlp,
-# ffmpeg nem deno no host. `make install-docker` instala-o
-# no PATH com o nome "dotboot".
+# dotboot (via Docker): runs dotboot in a container, with no yt-dlp, ffmpeg or
+# deno on the host. `make install-docker` puts it on PATH as "dotboot".
 #
-#   dotboot                         abre a TUI
-#   dotboot <url>                   igual a "dotboot download <url>"
-#   dotboot download -o aulas <url>
-#   dotboot download -formato mp3 -o musica <url>
+#   dotboot video https://youtu.be/xxxx
+#   dotboot audio -f m4a -o music https://youtu.be/xxxx
+#   dotboot doctor
 #
-# O container corre com o teu utilizador e com a tua home montada no mesmo
-# caminho: o ~, os caminhos absolutos, o ~/.config/dotboot e o seletor de
-# ficheiros da TUI funcionam como na instalação nativa.
+# The container runs as your user with your home mounted at the same path:
+# ~, absolute paths and ~/.config/dotboot work as with the native install.
 #
-# Variáveis: DOTBOOT_IMAGE (default dotboot:latest) e as DOTBOOT_* do dotboot.
+# Variables: DOTBOOT_IMAGE (default dotboot:latest) and dotboot's DOTBOOT_*.
 set -euo pipefail
 
 image=${DOTBOOT_IMAGE:-dotboot:latest}
-
-# Aceita "dotboot <url>" como atalho de "dotboot download <url>".
-case "${1:-}" in
-"" | tui | download | doctor | version | help | -h | --help | -v | --version) ;;
-*) set -- download "$@" ;;
-esac
 
 docker_args=(run --rm -i --init
 	--user "$(id -u):$(id -g)"
@@ -29,7 +20,7 @@ docker_args=(run --rm -i --init
 	-v "$HOME:$HOME"
 	-w "$PWD")
 
-# A TUI precisa de um terminal; as cores, de saber qual é.
+# The progress view needs a terminal, and the colors need to know which one.
 if [ -t 0 ] && [ -t 1 ]; then
 	docker_args+=(-t -e TERM="${TERM:-xterm-256color}")
 	if [ -n "${COLORTERM:-}" ]; then
@@ -37,8 +28,8 @@ if [ -t 0 ] && [ -t 1 ]; then
 	fi
 fi
 
-# mount_same monta um caminho do host no mesmo sítio dentro do container,
-# a não ser que já esteja dentro da home (que já está montada).
+# mount_same mounts a host path at the same place in the container, unless
+# it is inside the home (already mounted) or mounted already.
 mounted=$'\n'
 mount_same() {
 	local path=$1
@@ -50,14 +41,14 @@ mount_same() {
 
 mount_same "$PWD"
 
-# As variáveis do dotboot definidas no host valem também lá dentro.
+# dotboot's variables set on the host apply inside too.
 for var in DOTBOOT_OUTPUT_DIR DOTBOOT_COOKIES_FILE DOTBOOT_LOG_LEVEL DOTBOOT_JS_RUNTIMES; do
 	if [ -n "${!var:-}" ]; then
 		docker_args+=(-e "$var=${!var}")
 	fi
 done
 
-# config_value lê KEY de um ficheiro .env (a última linha ganha), sem aspas.
+# config_value reads KEY from a .env file (the last line wins), unquoted.
 config_value() {
 	local key=$1 file=$2 line value=""
 	[ -r "$file" ] || return 0
@@ -65,13 +56,13 @@ config_value() {
 		case "$line" in "$key="*) value=${line#*=} ;; esac
 	done <"$file"
 	case "$value" in \"*\") value=${value:1:-1} value=${value//\\\"/\"} value=${value//\\\\/\\} ;; esac
-	# shellcheck disable=SC2088 # o ~ é literal: expande-se aqui à mão
+	# shellcheck disable=SC2088 # the ~ is literal here and expanded by hand
 	case "$value" in "~" | "~/"*) value=$HOME${value:1} ;; esac
 	printf '%s' "$value"
 }
 
-# setting devolve uma definição com a prioridade do dotboot: ambiente,
-# ./.env e por fim ~/.config/dotboot/config.env.
+# setting returns a setting with dotboot's priority: environment, ./.env,
+# then ~/.config/dotboot/config.env.
 config_file=${XDG_CONFIG_HOME:-$HOME/.config}/dotboot/config.env
 setting() {
 	local key=$1 value=${!1:-}
@@ -80,8 +71,8 @@ setting() {
 	printf '%s' "$value"
 }
 
-# A pasta de saída e a dos cookies, venham de onde vierem, têm de estar
-# montadas: sem isto, a pasta gravada nas Definições não existia no container.
+# The output and cookies folders must be mounted wherever they are set:
+# otherwise a folder from config.env did not exist in the container.
 output=$(setting DOTBOOT_OUTPUT_DIR)
 if [ -n "$output" ] && mkdir -p "$output" 2>/dev/null; then
 	mount_same "$(cd "$output" && pwd)"
@@ -91,8 +82,7 @@ if [ -n "$cookies" ] && [ -e "$cookies" ]; then
 	mount_same "$(cd "$(dirname "$cookies")" && pwd)"
 fi
 
-# No WSL, os discos do Windows (/mnt/c, /mnt/d…): uma pasta escrita na TUI
-# depois de o container arrancar já não pode ser montada.
+# On WSL, the Windows drives (/mnt/c, /mnt/d…), so any folder there works.
 if grep -qi microsoft /proc/version 2>/dev/null; then
 	for drive in /mnt/[a-z]; do
 		if [ -d "$drive" ]; then
@@ -101,19 +91,24 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
 	done
 fi
 
-# Caminhos absolutos nos argumentos (-o, -a, -cookies, ficheiros de música).
+# Absolute paths in the arguments (-o, -a, --cookies and their values).
 prev=""
 for arg in "$@"; do
 	value=$arg
-	case "$arg" in -o=* | -a=* | -cookies=*) value=${arg#*=} ;; esac
+	case "$arg" in --*=*) value=${arg#*=} ;; esac
 	case "$value" in
 	/*)
-		if [ "$prev" = "-o" ] || [ "${arg%%=*}" = "-o" ]; then
+		case "$prev|${arg%%=*}" in
+		-o\|* | --output\|* | *\|--output)
 			mkdir -p "$value"
 			mount_same "$value"
-		elif [ -e "$value" ]; then
-			mount_same "$(dirname "$value")"
-		fi
+			;;
+		*)
+			if [ -e "$value" ]; then
+				mount_same "$(dirname "$value")"
+			fi
+			;;
+		esac
 		;;
 	esac
 	prev=$arg

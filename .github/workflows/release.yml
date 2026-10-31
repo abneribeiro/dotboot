@@ -1,7 +1,7 @@
 name: Release
 
-# Uma tag vX.Y.Z (make release VERSION=vX.Y.Z) publica os binários de todas
-# as plataformas como release do GitHub, com checksums.txt.
+# A vX.Y.Z tag (make release VERSION=vX.Y.Z) publishes the binaries for every
+# platform as a GitHub release, with checksums.txt.
 on:
   push:
     tags: ["v*"]
@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # O GoReleaser precisa do histórico e das tags para o changelog.
+          # GoReleaser needs the history and the tags for the changelog.
           fetch-depth: 0
       - uses: actions/setup-go@v7
         with:

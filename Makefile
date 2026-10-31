@@ -1,10 +1,10 @@
-# dotboot — instalar, configurar, testar e correr.
+# dotboot: install, test and run.
 #
-#   make              mostra os targets
-#   make setup        configura tudo depois do clone (assistente)
+#   make              list the targets
+#   make setup        set everything up after cloning (guided)
 #
-# Variáveis úteis: PREFIX/BINDIR (onde instalar a CLI), IMAGE, VERSION (por
-# omissão, o git describe).
+# Useful variables: PREFIX/BINDIR (where to install), IMAGE, VERSION
+# (defaults to git describe).
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -27,130 +27,123 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.dat
 
 GORELEASER_IMAGE ?= goreleaser/goreleaser:v2.19.0
 
-# DOCKER_BUILD_FLAGS acrescenta opções ao docker build, ex: --network host
-# numa máquina onde o DNS falhe dentro do build.
+# DOCKER_BUILD_FLAGS adds docker build options, e.g. --network host on a
+# machine where DNS fails inside the build.
 DOCKER_BUILD_FLAGS ?=
 DOCKER_BUILD := docker build $(DOCKER_BUILD_FLAGS) \
 	--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE)
 
-# Avisa quando o diretório de instalação não está no PATH.
+# Warns when the install folder is not on PATH.
 define path_hint
 case ":$$PATH:" in *":$(BINDIR):"*) ;; \
-  *) echo "⚠️  $(BINDIR) não está no PATH. Acrescenta ao ~/.zshrc ou ~/.bashrc:"; \
-     echo "     export PATH=\"$(BINDIR):\$$PATH\"" ;; esac
+  *) echo "! $(BINDIR) is not on your PATH. Add this to ~/.zshrc or ~/.bashrc:"; \
+     echo "    export PATH=\"$(BINDIR):\$$PATH\"" ;; esac
 endef
 
-.PHONY: help setup config doctor run deps build install install-docker uninstall \
+.PHONY: help setup run deps build install install-docker uninstall \
 	fmt vet lint test test-race cover test-integration test-integration-docker check \
 	docker-build update-ytdlp release-snapshot release clean
 
-##@ Começar
+##@ Getting started
 
-help: ## Mostra esta ajuda
-	@awk 'BEGIN {FS = ":.*## "; printf "Uso: make \033[36m<target>\033[0m [VAR=valor]\n"} \
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*## "; printf "Usage: make \033[31m<target>\033[0m [VAR=value]\n"} \
 		/^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} \
-		/^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+		/^[a-zA-Z0-9_-]+:.*## / {printf "  \033[31m%-24s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-setup: ## Assistente pós-clone: instala a CLI (nativa ou Docker) e configura-a
+setup: ## Guided setup: install dotboot (Docker or native) and pick the output folder
 	@BINDIR="$(BINDIR)" IMAGE="$(IMAGE)" scripts/setup.sh
 
-config: ## Cria ou edita ~/.config/dotboot/config.env (pasta de saída, cookies)
-	@scripts/configure-env.sh
+run: ## Run dotboot from source (ARGS="video <url>")
+	go run $(PKG) $(ARGS)
 
-run: ## Abre a TUI a partir do código (go run)
-	go run $(PKG)
+##@ Native install
 
-doctor: build ## Verifica dependências e configuração
-	@$(BIN_DIR)/$(BINARY) doctor
-
-##@ CLI no host
-
-deps: ## Instala yt-dlp e deno em BINDIR, e o ffmpeg pelo gestor de pacotes
+deps: ## Install yt-dlp and deno into BINDIR, and ffmpeg with the package manager
 	@BINDIR="$(BINDIR)" scripts/install-deps.sh
 
-
-build: ## Compila bin/dotboot com a versão embutida
+build: ## Build bin/dotboot with the version embedded
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(PKG)
 
-install: build ## Instala a CLI nativa em BINDIR (default ~/.local/bin)
+install: build ## Install the native binary into BINDIR (default ~/.local/bin)
 	@mkdir -p "$(BINDIR)"
 	@if [ -f "$(BINDIR)/$(BINARY)" ] && [ "$$(head -c 2 "$(BINDIR)/$(BINARY)")" = "#!" ]; then \
-		echo "ℹ️  $(BINDIR)/$(BINARY) era o wrapper Docker e passa a ser a CLI nativa."; fi
+		echo "Replacing the Docker wrapper at $(BINDIR)/$(BINARY) with the native binary."; fi
 	install -m 0755 $(BIN_DIR)/$(BINARY) "$(BINDIR)/$(BINARY)"
-	@echo "✅ $$("$(BINDIR)/$(BINARY)" version)"
+	@"$(BINDIR)/$(BINARY)" version
 	@$(path_hint)
 
-install-docker: ## Instala o wrapper que corre tudo via Docker (DOCKER_CLI_NAME=dotboot)
+install-docker: ## Install the wrapper that runs dotboot in Docker (DOCKER_CLI_NAME=dotboot)
 	@mkdir -p "$(BINDIR)"
 	install -m 0755 scripts/dotboot-docker "$(BINDIR)/$(DOCKER_CLI_NAME)"
-	@echo "✅ $(BINDIR)/$(DOCKER_CLI_NAME) → imagem $(IMAGE) (constrói-a com: make docker-build)"
+	@echo "Installed $(BINDIR)/$(DOCKER_CLI_NAME), which runs the $(IMAGE) image (make docker-build)."
 	@$(path_hint)
 
-uninstall: ## Remove a CLI de BINDIR
+uninstall: ## Remove dotboot from BINDIR
 	rm -f "$(BINDIR)/$(BINARY)"
 
-##@ Qualidade
+##@ Quality
 
-fmt: ## Formata o código (gofmt)
+fmt: ## Format the code (gofmt)
 	gofmt -w cmd internal
 
 vet: ## go vet
 	go vet ./...
 
-lint: ## Falha se houver código por formatar ou avisos do vet
+lint: ## Fail on unformatted code or vet warnings
 	@unformatted="$$(gofmt -l cmd internal)"; \
-	if [ -n "$$unformatted" ]; then echo "Por formatar (make fmt):"; echo "$$unformatted"; exit 1; fi
+	if [ -n "$$unformatted" ]; then echo "Unformatted (make fmt):"; echo "$$unformatted"; exit 1; fi
 	go vet ./...
 	go vet -tags integration ./...
 
-test: ## Testes unitários (rápidos, sem rede)
+test: ## Unit tests (fast, no network)
 	go test ./...
 
-test-race: ## Testes com o detetor de corridas
+test-race: ## Tests with the race detector
 	go test -race ./...
 
-cover: ## Cobertura (coverage.out + total)
+cover: ## Coverage (coverage.out and the total)
 	go test -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out | tail -1
 
-test-integration: ## Testes de integração no host (precisa de yt-dlp, ffmpeg e rede)
+test-integration: ## Integration tests on the host (needs yt-dlp, ffmpeg and the network)
 	go test -tags integration -v -timeout 30m ./internal/downloader
 
-test-integration-docker: docker-build ## Testes de integração dentro da imagem (downloads reais)
+test-integration-docker: docker-build ## Integration tests inside the image (real downloads)
 	CGO_ENABLED=0 go test -c -tags integration -o $(BIN_DIR)/downloader.test ./internal/downloader
 	docker run --rm --entrypoint /tests/downloader.test \
 		-v "$(CURDIR)/$(BIN_DIR):/tests:ro" $(IMAGE) \
 		-test.v -test.timeout 20m $(if $(RUN),-test.run '$(RUN)')
 
-check: lint test-race ## lint + testes com -race (o mesmo que o CI)
+check: lint test-race ## lint + tests with -race (what CI runs)
 
 ##@ Docker
 
-docker-build: ## Constrói a imagem (IMAGE=dotboot:latest)
+docker-build: ## Build the image (IMAGE=dotboot:latest)
 	$(DOCKER_BUILD) --target app -t $(IMAGE) .
 
-update-ytdlp: ## Fixa a última versão do yt-dlp no Dockerfile e reconstrói a imagem
+update-ytdlp: ## Pin the latest yt-dlp in the Dockerfile and rebuild the image
 	@tag="$$(curl -fsSI https://github.com/yt-dlp/yt-dlp/releases/latest | tr -d '\r' \
 		| grep -i '^location:' | sed 's#.*/tag/##')"; \
-	if [ -z "$$tag" ]; then echo "não foi possível descobrir a última versão do yt-dlp" >&2; exit 1; fi; \
+	if [ -z "$$tag" ]; then echo "cannot find the latest yt-dlp release" >&2; exit 1; fi; \
 	sed -i.bak "s/^ARG YTDLP_VERSION=.*/ARG YTDLP_VERSION=$$tag/" Dockerfile && rm -f Dockerfile.bak; \
-	echo "yt-dlp fixado em $$tag no Dockerfile"
+	echo "yt-dlp pinned to $$tag in the Dockerfile"
 	$(MAKE) docker-build
 
 ##@ Releases
 
-release-snapshot: ## Binários de todas as plataformas em dist/, sem publicar
+release-snapshot: ## Binaries for every platform in dist/, without publishing
 	docker run --rm --user "$$(id -u):$$(id -g)" \
 		-e HOME=/tmp -e GOCACHE=/tmp/go-build -e GOMODCACHE=/gomod \
 		-v "$$(go env GOMODCACHE):/gomod" -v "$(CURDIR):/src" -w /src \
 		$(GORELEASER_IMAGE) release --snapshot --clean
 
-release: ## Cria e envia a tag VERSION=vX.Y.Z (o GitHub Actions publica a release)
+release: ## Create and push the tag VERSION=vX.Y.Z (GitHub Actions publishes it)
 	@if ! [[ "$(VERSION)" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$$ ]]; then \
-		echo "usa: make release VERSION=v0.1.0" >&2; exit 1; fi
-	@if [ -n "$$(git status --porcelain)" ]; then echo "há alterações por commitar" >&2; exit 1; fi
+		echo "usage: make release VERSION=v0.1.0" >&2; exit 1; fi
+	@if [ -n "$$(git status --porcelain)" ]; then echo "there are uncommitted changes" >&2; exit 1; fi
 	git tag -a $(VERSION) -m "dotboot $(VERSION)"
 	git push origin $(VERSION)
 
-clean: ## Remove bin/, dist/ e a cobertura
+clean: ## Remove bin/, dist/ and the coverage file
 	rm -rf $(BIN_DIR) dist coverage.out
