@@ -1,133 +1,108 @@
-// Package jobs é o motor partilhado pelo CLI e pela TUI: valida um pedido
-// (descarregar vídeo ou extrair áudio), executa-o e relata o progresso por
-// eventos. Não escreve no terminal — quem chama decide como mostrar cada
-// Event.
+// Package jobs is dotboot's engine: it validates a download request, runs it
+// and reports progress as events. It never writes to the terminal; the
+// caller decides how to show each Event.
 package jobs
 
 import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"math"
 	"os"
 	"time"
 
 	"github.com/abneribeiro/dotboot/internal/config"
 )
 
-// ErrPartial sinaliza que parte do trabalho terminou e parte falhou — o
-// normal numa playlist com um vídeo privado pelo meio. O Result diz o que
-// ficou feito.
-var ErrPartial = errors.New("alguns itens falharam")
+// ErrPartial means part of the work finished and part failed, which is
+// normal for a playlist with a private video in the middle. The Result says
+// what was done.
+var ErrPartial = errors.New("some items failed")
 
-// Stage é a etapa em que um trabalho está, já na forma de mostrar.
+// Stage is what a job is doing, ready to show.
 type Stage string
 
 const (
-	StageInfo     Stage = "a obter informação"
-	StageDownload Stage = "a descarregar"
-	StageMerge    Stage = "a juntar vídeo e áudio"
-	StageExtract  Stage = "a extrair o áudio"
-	StageConvert  Stage = "a converter para MP4"
+	StageInfo     Stage = "Fetching info"
+	StageDownload Stage = "Downloading"
+	StageMerge    Stage = "Merging"
+	StageExtract  Stage = "Extracting audio"
+	StageConvert  Stage = "Converting to MP4"
 )
 
-// Event é uma atualização de um trabalho. Os campos vazios não mudam o que
-// já se sabia: um Event só com Log é só uma linha de log.
+// Event is a job update. Empty fields leave what was known unchanged: an
+// Event with only Log is just a log line.
 type Event struct {
-	// Stage, quando não vazio, é a nova etapa.
+	// Stage, when not empty, is the new stage.
 	Stage Stage
-	// Fraction entre 0 e 1; negativa = sem informação (barra indeterminada).
-	// Só tem significado num Event com Progress=true.
+	// Fraction between 0 and 1; negative means unknown (indeterminate bar).
+	// It only means something in an Event with Progress set.
 	Fraction float64
 	Progress bool
-	// Speed (bytes/s) e ETA (negativo = desconhecido) do download.
+	// Speed (bytes/s) and ETA (negative = unknown) of the download.
 	Speed float64
 	ETA   time.Duration
-	// Item é o ficheiro ou a música em que se está a trabalhar.
+	// Item is the file being worked on.
 	Item string
-	// Index e Count: posição numa lista (playlist, várias músicas).
+	// Index and Count: position in a list (playlist, several URLs).
 	Index int
 	Count int
-	// Log é uma linha de output (yt-dlp, ffmpeg).
+	// Log is an output line (yt-dlp, ffmpeg).
 	Log string
 }
 
-// Reporter recebe os eventos de um trabalho. Pode ser chamado de várias
-// goroutines (stdout e stderr dos processos), por isso tem de ser seguro.
+// Reporter receives a job's events. It may be called from several goroutines
+// (the processes' stdout and stderr), so it must be safe for that.
 type Reporter func(Event)
 
-// Result descreve o que um trabalho produziu.
+// Result describes what a job produced.
 type Result struct {
-	// OutputDir é a pasta de saída.
+	// OutputDir is the output folder.
 	OutputDir string
-	// Files são os ficheiros finais criados ou atualizados.
+	// Files are the final files created or updated.
 	Files []string
+	// Converted lists the files that had to be converted to MP4, with the
+	// codec they came in.
+	Converted map[string]string
 }
 
-// Env é o que os trabalhos precisam da configuração.
+// Env is what jobs need from the configuration.
 type Env struct {
-	OutputBase  string // DOTBOOT_OUTPUT_DIR: base de -o relativos
 	TempDir     string
 	JSRuntimes  string
 	CookiesFile string
 }
 
-// EnvFrom extrai o Env de uma configuração carregada.
+// EnvFrom extracts the Env from a loaded configuration.
 func EnvFrom(cfg *config.Config) Env {
 	return Env{
-		OutputBase:  cfg.OutputDir,
 		TempDir:     cfg.TempDir,
 		JSRuntimes:  cfg.JSRuntimes,
 		CookiesFile: cfg.CookiesFile,
 	}
 }
 
-// FormatBytes escreve um tamanho para humanos (1.4 MB, 820 KB).
-func FormatBytes(b float64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%.0f B", b)
-	}
-	exp := int(math.Log(b) / math.Log(unit))
-	exp = min(exp, 4)
-	return fmt.Sprintf("%.1f %cB", b/math.Pow(unit, float64(exp)), "KMGT"[exp-1])
-}
-
-// FormatETA escreve um tempo restante (0:42, 1:05:09); vazio se desconhecido.
-func FormatETA(d time.Duration) string {
-	if d < 0 {
-		return ""
-	}
-	s := int(d.Round(time.Second).Seconds())
-	if s >= 3600 {
-		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
-	}
-	return fmt.Sprintf("%d:%02d", s/60, s%60)
-}
-
-// PrepareOutputDir cria a pasta de saída e confirma que se pode escrever
-// nela. Corre antes do trabalho: sem isto, uma pasta só de leitura (ex: "/")
-// só falhava no fim, depois de minutos de download e de conversão.
+// PrepareOutputDir creates the output folder and checks it is writable. It
+// runs before the job: otherwise a read-only folder only failed at the end,
+// after minutes of downloading and converting.
 func PrepareOutputDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return outputDirError(dir, err)
 	}
-	f, err := os.CreateTemp(dir, ".dotboot-teste-*")
+	f, err := os.CreateTemp(dir, ".dotboot-check-*")
 	if err != nil {
 		return outputDirError(dir, err)
 	}
 	f.Close()
-	_ = os.Remove(f.Name()) // um ficheiro vazio esquecido não faz mal
+	_ = os.Remove(f.Name()) // a forgotten empty file does no harm
 	return nil
 }
 
-// outputDirError explica a falha. Dentro do Docker (a imagem define
-// DOTBOOT_DOCKER) só se veem as pastas que o wrapper montou ao arrancar.
+// outputDirError explains the failure. Inside Docker (the image sets
+// DOTBOOT_DOCKER) only the folders the wrapper mounted at start are visible.
 func outputDirError(dir string, err error) error {
 	if os.Getenv("DOTBOOT_DOCKER") != "" && (errors.Is(err, fs.ErrPermission) || errors.Is(err, fs.ErrNotExist)) {
-		return fmt.Errorf("não é possível gravar em %s: %w (no Docker só estão acessíveis a tua home, "+
-			"os discos do Windows em /mnt e as pastas das definições com que o dotboot arrancou; "+
-			"depois de mudar as Definições, fecha e volta a abrir o dotboot)", dir, err)
+		return fmt.Errorf("cannot write to %s: %w (in Docker only your home, the Windows drives under /mnt "+
+			"and the configured output folder are visible)", dir, err)
 	}
-	return fmt.Errorf("não é possível gravar em %s: %w", dir, err)
+	return fmt.Errorf("cannot write to %s: %w", dir, err)
 }

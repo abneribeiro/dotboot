@@ -10,7 +10,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// envMap devolve um getenv baseado num mapa, para testes determinísticos.
+// envMap returns a getenv backed by a map, for deterministic tests.
 func envMap(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
@@ -18,13 +18,13 @@ func envMap(m map[string]string) func(string) string {
 func TestLoadFromDefaults(t *testing.T) {
 	cfg, err := loadFrom(envMap(map[string]string{"HOME": "/home/ana"}))
 	if err != nil {
-		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
+		t.Fatalf("loadFrom: %v", err)
 	}
 	if cfg.LogLevel != slog.LevelInfo {
-		t.Errorf("LogLevel = %v, esperado info", cfg.LogLevel)
+		t.Errorf("LogLevel = %v, want info", cfg.LogLevel)
 	}
 	if cfg.OutputDir != "" || cfg.CookiesFile != "" || cfg.JSRuntimes != "" {
-		t.Errorf("saída/cookies/js deviam vir vazios: %+v", cfg)
+		t.Errorf("output, cookies and js runtime should be empty: %+v", cfg)
 	}
 }
 
@@ -42,37 +42,38 @@ func TestLoadFromOverrides(t *testing.T) {
 		KeyJSRuntimes:  "node",
 	}))
 	if err != nil {
-		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
+		t.Fatalf("loadFrom: %v", err)
 	}
 	if cfg.OutputDir != "/videos" || cfg.TempDir != "/scratch" {
-		t.Errorf("caminhos = %q %q", cfg.OutputDir, cfg.TempDir)
+		t.Errorf("paths = %q %q", cfg.OutputDir, cfg.TempDir)
 	}
 	if cfg.LogLevel != slog.LevelDebug || cfg.CookiesFile != cookies || cfg.JSRuntimes != "node" {
 		t.Errorf("config = %+v", cfg)
 	}
 }
 
-// Num .env o ~ chega literal: sem expansão, o CLI criava uma pasta chamada "~".
-func TestLoadFromExpandeTil(t *testing.T) {
+// In a .env the ~ arrives literally: without expansion, dotboot created a
+// folder named "~".
+func TestLoadFromExpandsTilde(t *testing.T) {
 	cfg, err := loadFrom(envMap(map[string]string{
 		"HOME":       "/home/ana",
 		KeyOutputDir: "~/Videos",
 		KeyTempDir:   "~",
 	}))
 	if err != nil {
-		t.Fatalf("loadFrom devolveu erro inesperado: %v", err)
+		t.Fatalf("loadFrom: %v", err)
 	}
 	if cfg.OutputDir != "/home/ana/Videos" || cfg.TempDir != "/home/ana" {
 		t.Errorf("OutputDir/TempDir = %q/%q", cfg.OutputDir, cfg.TempDir)
 	}
 
-	// Só o ~ inicial é especial.
-	cfg, err = loadFrom(envMap(map[string]string{"HOME": "/home/ana", KeyOutputDir: "/dados/~backup"}))
+	// Only a leading ~ is special.
+	cfg, err = loadFrom(envMap(map[string]string{"HOME": "/home/ana", KeyOutputDir: "/data/~backup"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.OutputDir != "/dados/~backup" {
-		t.Errorf("OutputDir = %q, esperado inalterado", cfg.OutputDir)
+	if cfg.OutputDir != "/data/~backup" {
+		t.Errorf("OutputDir = %q, want it unchanged", cfg.OutputDir)
 	}
 }
 
@@ -82,14 +83,14 @@ func TestLoadFromInvalidValues(t *testing.T) {
 		name string
 		env  map[string]string
 	}{
-		{"nível de log desconhecido", map[string]string{KeyLogLevel: "verboso"}},
-		{"cookies inexistentes", map[string]string{KeyCookiesFile: filepath.Join(dir, "nao-existe.txt")}},
-		{"cookies é uma pasta", map[string]string{KeyCookiesFile: dir}},
+		{"unknown log level", map[string]string{KeyLogLevel: "verbose"}},
+		{"missing cookies", map[string]string{KeyCookiesFile: filepath.Join(dir, "missing.txt")}},
+		{"cookies is a folder", map[string]string{KeyCookiesFile: dir}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, err := loadFrom(envMap(tt.env)); err == nil {
-				t.Errorf("loadFrom(%v) devia devolver erro", tt.env)
+				t.Errorf("loadFrom(%v) should fail", tt.env)
 			}
 		})
 	}
@@ -98,50 +99,50 @@ func TestLoadFromInvalidValues(t *testing.T) {
 func TestSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "config.env")
 
-	// Ficheiro novo: cria a pasta, escreve ordenado e com 0600.
-	if err := Save(path, map[string]string{KeyOutputDir: "/home/ana/Os Meus Vídeos", KeyCookiesFile: "/m"}); err != nil {
-		t.Fatalf("Save falhou: %v", err)
+	// New file: creates the folder and writes it with 0600.
+	if err := Save(path, map[string]string{KeyOutputDir: "/home/ana/My Videos", KeyCookiesFile: "/c"}); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info.Mode().Perm() != 0o600 {
-		t.Errorf("permissões = %o, esperado 600", info.Mode().Perm())
+		t.Errorf("permissions = %o, want 600", info.Mode().Perm())
 	}
 
-	// Segunda gravação: preserva o resto, substitui e remove (valor vazio).
-	if err := os.WriteFile(path, []byte("# comentário\nOUTRA=1\n"+KeyOutputDir+"=/antigo\n"+KeyCookiesFile+"=/m\n"), 0o600); err != nil {
+	// Second write: keeps the rest, replaces, and removes on an empty value.
+	if err := os.WriteFile(path, []byte("# comment\nOTHER=1\n"+KeyOutputDir+"=/old\n"+KeyCookiesFile+"=/c\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Save(path, map[string]string{KeyOutputDir: "/novo", KeyCookiesFile: ""}); err != nil {
+	if err := Save(path, map[string]string{KeyOutputDir: "/new", KeyCookiesFile: ""}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
 	got := string(data)
-	for _, want := range []string{"# comentário", "OUTRA=1", KeyOutputDir + "=/novo"} {
+	for _, want := range []string{"# comment", "OTHER=1", KeyOutputDir + "=/new"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("falta %q em:\n%s", want, got)
+			t.Errorf("missing %q in:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, KeyCookiesFile) || strings.Contains(got, "/antigo") {
-		t.Errorf("a chave vazia devia sair e a antiga ser substituída:\n%s", got)
+	if strings.Contains(got, KeyCookiesFile) || strings.Contains(got, "/old") {
+		t.Errorf("the empty key should be removed and the old value replaced:\n%s", got)
 	}
 
-	// Um valor com espaços tem de voltar igual pelo godotenv.
-	if err := Save(path, map[string]string{KeyOutputDir: `/home/ana/Os "Meus" Vídeos`}); err != nil {
+	// A value with spaces and quotes must read back the same with godotenv.
+	if err := Save(path, map[string]string{KeyOutputDir: `/home/ana/My "Best" Videos`}); err != nil {
 		t.Fatal(err)
 	}
 	env, err := godotenv.Read(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env[KeyOutputDir] != `/home/ana/Os "Meus" Vídeos` {
-		t.Errorf("valor lido = %q", env[KeyOutputDir])
+	if env[KeyOutputDir] != `/home/ana/My "Best" Videos` {
+		t.Errorf("read back %q", env[KeyOutputDir])
 	}
 }
 
-func TestFilePathSegueXDG(t *testing.T) {
+func TestFilePathFollowsXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/xdg")
 	if got := FilePath(); got != "/xdg/dotboot/config.env" {
 		t.Errorf("FilePath = %q", got)

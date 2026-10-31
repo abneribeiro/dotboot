@@ -8,8 +8,8 @@ import (
 	"unicode/utf8"
 )
 
-// ErrorKind classifica as falhas conhecidas do yt-dlp/ffmpeg para que os
-// chamadores (bot, CLI) escolham mensagens próprias sem fazer grep de strings.
+// ErrorKind classifies the known yt-dlp failures, so callers can react to
+// them without matching strings.
 type ErrorKind int
 
 const (
@@ -18,71 +18,76 @@ const (
 	ErrPrivate
 	ErrUnavailable
 	ErrUnsupportedURL
-	ErrTimeout
-	ErrTooLarge
 
-	// ErrLoginRequired: o site exige uma sessão — a verificação "não és um
-	// robô" do YouTube, a restrição de idade, conteúdo que pede login.
-	// Resolve-se com cookies (ver Options.CookiesFile).
+	// ErrLoginRequired: the site wants a session (YouTube's "confirm you're
+	// not a bot" check, age restrictions, content behind a login). Cookies
+	// fix it (see Options.CookiesFile).
 	ErrLoginRequired
 
-	// ErrRateLimited: o site respondeu 429, demasiados pedidos deste IP.
+	// ErrRateLimited: the site answered 429, too many requests from this IP.
 	ErrRateLimited
 
-	// ErrCanceled: o download foi cancelado (encerramento do bot, CTRL+C).
-	// Não é uma falha do download.
+	// ErrCanceled: the download was canceled (Ctrl+C). Not a failure.
 	ErrCanceled
 )
 
-// maxDetailLen limita a linha de erro do yt-dlp mostrada ao utilizador.
+// maxDetailLen caps the yt-dlp error line shown to the user.
 const maxDetailLen = 300
 
-// DownloadError envolve uma falha de download com a sua classificação.
+// DownloadError wraps a download failure with its classification.
 type DownloadError struct {
-	Kind ErrorKind
-	// Msg, quando preenchido, substitui a mensagem por omissão do Kind
-	// (usado por ErrTooLarge para incluir os tamanhos).
-	Msg    string
+	Kind   ErrorKind
 	Output string
 	Err    error
 }
 
 func (e *DownloadError) Error() string {
-	if e.Msg != "" {
-		return e.Msg
-	}
 	switch e.Kind {
 	case ErrLiveNoDVR:
-		return "esta live não suporta DVR ou ainda não começou; não é possível fazer o recorte"
+		return "this live stream has no DVR or has not started yet, so it cannot be trimmed"
 	case ErrPrivate:
-		return "vídeo privado ou indisponível"
+		return "the video is private"
 	case ErrUnavailable:
-		return "vídeo indisponível ou removido"
+		return "the video is unavailable or was removed"
 	case ErrUnsupportedURL:
-		return "URL não suportado pelo yt-dlp"
-	case ErrTimeout:
-		return "timeout durante o download"
-	case ErrTooLarge:
-		return "o vídeo excede o tamanho máximo permitido"
+		return "yt-dlp does not support this URL"
 	case ErrLoginRequired:
-		return "o site pediu login ou verificação (são precisos cookies)"
+		return "the site asked for a login or a bot check"
 	case ErrRateLimited:
-		return "o site está a limitar os pedidos (HTTP 429)"
+		return "the site is rate limiting requests (HTTP 429)"
 	case ErrCanceled:
-		return "download cancelado"
+		return "download canceled"
+	}
+	if detail := e.Detail(); detail != "" {
+		return detail
 	}
 	if e.Err != nil {
-		return fmt.Sprintf("yt-dlp falhou: %v", e.Err)
+		return fmt.Sprintf("yt-dlp failed: %v", e.Err)
 	}
-	return "erro desconhecido no download"
+	return "the download failed"
 }
 
 func (e *DownloadError) Unwrap() error { return e.Err }
 
-// Detail devolve a última linha "ERROR:" do yt-dlp, sem o prefixo e limitada a
-// maxDetailLen caracteres. É o motivo real de uma falha não classificada — o
-// que o utilizador precisa de ler em vez de "exit status 1". Vazio quando o
-// output não tem nenhuma.
+// Hint suggests how to fix the failure, or "" when there is nothing to
+// suggest.
+func (e *DownloadError) Hint() string {
+	switch e.Kind {
+	case ErrLoginRequired:
+		return "export cookies from a browser where you are logged in and pass them with --cookies " +
+			"(or set them once with: dotboot config cookies <file>)"
+	case ErrRateLimited:
+		return "wait a few minutes, or pass cookies with --cookies"
+	case ErrUnknown:
+		return "if a site that used to work stopped working, yt-dlp is probably outdated (dotboot doctor)"
+	}
+	return ""
+}
+
+// Detail returns yt-dlp's last "ERROR:" line, without the prefix and capped
+// at maxDetailLen characters: the real reason for an unclassified failure,
+// which the user needs instead of "exit status 1". It is empty when the
+// output has none.
 func (e *DownloadError) Detail() string {
 	lines := strings.Split(e.Output, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -93,8 +98,8 @@ func (e *DownloadError) Detail() string {
 	return ""
 }
 
-// truncateRunes corta s a n caracteres (não bytes, para não partir um
-// carácter UTF-8 a meio), terminando em "…" quando corta.
+// truncateRunes cuts s to n characters (not bytes, so a multi-byte character
+// is never split), ending with "…" when it cuts.
 func truncateRunes(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s
@@ -103,23 +108,21 @@ func truncateRunes(s string, n int) string {
 	return string(runes[:n-1]) + "…"
 }
 
-// classify converte o output do yt-dlp e os erros de execução/contexto
-// num DownloadError com o Kind apropriado.
+// classify turns yt-dlp's output and the run and context errors into a
+// DownloadError with the right Kind.
 func classify(output string, ctxErr, runErr error) *DownloadError {
 	lower := strings.ToLower(output)
 	kind := ErrUnknown
 
 	switch {
-	case errors.Is(ctxErr, context.DeadlineExceeded):
-		kind = ErrTimeout
 	case errors.Is(ctxErr, context.Canceled):
 		kind = ErrCanceled
 	case strings.Contains(lower, "does not allow dvr"),
 		strings.Contains(lower, "is not a video"),
 		strings.Contains(lower, "this live event will begin"):
 		kind = ErrLiveNoDVR
-	// Antes das verificações de login: a mensagem de vídeo privado do YouTube
-	// também diz "Sign in if you've been granted access".
+	// Before the login checks: YouTube's private-video message also says
+	// "Sign in if you've been granted access".
 	case strings.Contains(lower, "private video"):
 		kind = ErrPrivate
 	case strings.Contains(lower, "sign in to confirm"),

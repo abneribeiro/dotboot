@@ -1,10 +1,10 @@
-// Package config carrega a configuração do dotboot a partir de variáveis de
-// ambiente, com valores por omissão sensatos. Valores inválidos resultam em
-// erro — nunca em fallback silencioso.
+// Package config loads dotboot's configuration from environment variables,
+// with sensible defaults. Invalid values are errors, never a silent
+// fallback.
 //
-// As variáveis podem vir do ambiente, de um .env no diretório atual ou do
-// ficheiro global ~/.config/dotboot/config.env (ver LoadFiles), por esta
-// ordem de prioridade.
+// Variables can come from the environment, from a .env in the current folder
+// or from the global ~/.config/dotboot/config.env (see LoadFiles), in that
+// order of priority.
 package config
 
 import (
@@ -19,33 +19,33 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Config agrega a configuração do CLI e da TUI.
+// Config holds dotboot's settings.
 type Config struct {
-	// OutputDir é o caminho base de saída (DOTBOOT_OUTPUT_DIR): usado quando
-	// -o não é passado, e raiz de um -o relativo. Um -o absoluto ignora-o.
-	// Vazio = diretório atual.
+	// OutputDir is the base output folder (DOTBOOT_OUTPUT_DIR): used when -o
+	// is not given, and the root of a relative -o. An absolute -o ignores it.
+	// Empty means the current folder.
 	OutputDir string
 
-	// TempDir guarda ficheiros temporários dos downloads (DOTBOOT_TEMP_DIR,
-	// default os.TempDir()).
+	// TempDir holds the downloads' temporary files (DOTBOOT_TEMP_DIR, default
+	// os.TempDir()).
 	TempDir string
 
-	// LogLevel controla a verbosidade (DOTBOOT_LOG_LEVEL: debug|info|warn|error).
+	// LogLevel controls the verbosity (DOTBOOT_LOG_LEVEL: debug|info|warn|error).
 	LogLevel slog.Level
 
-	// CookiesFile é um ficheiro de cookies em formato Netscape
-	// (DOTBOOT_COOKIES_FILE), passado ao yt-dlp com --cookies. Resolve a
-	// verificação "não és um robô" do YouTube, a restrição de idade e o
-	// conteúdo que exige login. Tem de existir quando definido.
+	// CookiesFile is a Netscape-format cookies file (DOTBOOT_COOKIES_FILE),
+	// passed to yt-dlp with --cookies. It gets past YouTube's "confirm you're
+	// not a bot" check, age restrictions and content behind a login. It must
+	// exist when set.
 	CookiesFile string
 
-	// JSRuntimes é passado ao yt-dlp como --js-runtimes (DOTBOOT_JS_RUNTIMES,
-	// ex: "node"). Vazio usa o default do yt-dlp, o Deno; o main preenche-o
-	// com "node" quando o Deno falta e o node existe.
+	// JSRuntimes is passed to yt-dlp as --js-runtimes (DOTBOOT_JS_RUNTIMES,
+	// e.g. "node"). Empty uses yt-dlp's default, Deno; main sets it to "node"
+	// when Deno is missing and node is there.
 	JSRuntimes string
 }
 
-// Chaves das variáveis de ambiente, partilhadas com a TUI (Definições).
+// Environment variable names.
 const (
 	KeyOutputDir   = "DOTBOOT_OUTPUT_DIR"
 	KeyTempDir     = "DOTBOOT_TEMP_DIR"
@@ -54,8 +54,8 @@ const (
 	KeyJSRuntimes  = "DOTBOOT_JS_RUNTIMES"
 )
 
-// FilePath devolve o ficheiro de configuração global:
-// $XDG_CONFIG_HOME/dotboot/config.env, ou ~/.config/dotboot/config.env.
+// FilePath returns the global configuration file:
+// $XDG_CONFIG_HOME/dotboot/config.env, or ~/.config/dotboot/config.env.
 func FilePath() string {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
 		return filepath.Join(dir, "dotboot", "config.env")
@@ -66,20 +66,21 @@ func FilePath() string {
 	return filepath.Join(os.TempDir(), "dotboot", "config.env")
 }
 
-// LoadFiles carrega para o ambiente o ./.env e depois o ficheiro global. O
-// godotenv nunca sobrescreve uma variável já definida, por isso a
-// prioridade é: ambiente > ./.env > config.env. Ambos são opcionais.
+// LoadFiles loads ./.env and then the global file into the environment.
+// godotenv never overrides a variable that is already set, so the priority
+// is: environment > ./.env > config.env. Both are optional.
 func LoadFiles() {
-	_ = godotenv.Load(".env")     // opcional: só existe num projeto
-	_ = godotenv.Load(FilePath()) // opcional: só existe depois de gravar Definições
+	_ = godotenv.Load(".env")     // optional: only exists in a project
+	_ = godotenv.Load(FilePath()) // optional: only exists once something was configured
 }
 
-// Load lê a configuração a partir do ambiente do processo.
+// Load reads the configuration from the process environment.
 func Load() (*Config, error) {
 	return loadFrom(os.Getenv)
 }
 
-// loadFrom é a implementação testável de Load, com o ambiente injetado.
+// loadFrom is the testable implementation of Load, with the environment
+// injected.
 func loadFrom(getenv func(string) string) (*Config, error) {
 	cfg := &Config{
 		OutputDir:   getenv(KeyOutputDir),
@@ -104,12 +105,12 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 		case "error":
 			cfg.LogLevel = slog.LevelError
 		default:
-			return nil, fmt.Errorf("%s inválido: %q (usa debug|info|warn|error)", KeyLogLevel, v)
+			return nil, fmt.Errorf("invalid %s %q (use debug, info, warn or error)", KeyLogLevel, v)
 		}
 	}
 
-	// O ~ só é expandido pela shell na linha de comandos; num .env chegava
-	// aqui literal e criava uma pasta "~".
+	// The shell only expands ~ on the command line; in a .env it arrived
+	// literally and created a folder named "~".
 	for _, p := range []*string{&cfg.OutputDir, &cfg.TempDir, &cfg.CookiesFile} {
 		expanded, err := ExpandHome(*p, getenv)
 		if err != nil {
@@ -120,26 +121,26 @@ func loadFrom(getenv func(string) string) (*Config, error) {
 
 	if cfg.CookiesFile != "" {
 		if err := CheckCookiesFile(cfg.CookiesFile); err != nil {
-			return nil, fmt.Errorf("%s inválido: %w", KeyCookiesFile, err)
+			return nil, fmt.Errorf("invalid %s: %w", KeyCookiesFile, err)
 		}
 	}
 
 	return cfg, nil
 }
 
-// CheckCookiesFile confirma que path é um ficheiro que existe.
+// CheckCookiesFile checks that path is an existing file.
 func CheckCookiesFile(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s não é um ficheiro", path)
+		return fmt.Errorf("%s is not a file", path)
 	}
 	return nil
 }
 
-// ExpandHome expande um "~" inicial a partir de $HOME.
+// ExpandHome expands a leading "~" using $HOME.
 func ExpandHome(path string, getenv func(string) string) (string, error) {
 	if path != "~" && !strings.HasPrefix(path, "~/") {
 		return path, nil
@@ -148,16 +149,16 @@ func ExpandHome(path string, getenv func(string) string) (string, error) {
 	if home == "" {
 		var err error
 		if home, err = os.UserHomeDir(); err != nil {
-			return "", fmt.Errorf("não foi possível expandir %q: %w", path, err)
+			return "", fmt.Errorf("cannot expand %q: %w", path, err)
 		}
 	}
 	return filepath.Join(home, strings.TrimPrefix(path, "~")), nil
 }
 
-// Save grava values (chave → valor) em path, no formato do .env. Preserva as
-// outras linhas e os comentários e substitui só as chaves pedidas; uma chave
-// com valor vazio é removida. Cria a pasta e deixa o ficheiro com 0600 (pode
-// apontar para cookies, que são credenciais).
+// Save writes values (key to value) to path in .env format. It keeps the
+// other lines and comments and replaces only the given keys; a key with an
+// empty value is removed. It creates the folder and leaves the file at 0600
+// (it may point to cookies, which are credentials).
 func Save(path string, values map[string]string) error {
 	var lines []string
 	if f, err := os.Open(path); err == nil {
@@ -167,10 +168,10 @@ func Save(path string, values map[string]string) error {
 		}
 		f.Close()
 		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("erro ao ler %s: %w", path, err)
+			return fmt.Errorf("reading %s: %w", path, err)
 		}
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("erro ao ler %s: %w", path, err)
+		return fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	done := make(map[string]bool, len(values))
@@ -200,7 +201,7 @@ func Save(path string, values map[string]string) error {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("não foi possível criar %s: %w", filepath.Dir(path), err)
+		return fmt.Errorf("cannot create %s: %w", filepath.Dir(path), err)
 	}
 	tmp := path + ".tmp"
 	content := strings.Join(out, "\n")
@@ -208,13 +209,13 @@ func Save(path string, values map[string]string) error {
 		content += "\n"
 	}
 	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
-		return fmt.Errorf("não foi possível gravar %s: %w", path, err)
+		return fmt.Errorf("cannot write %s: %w", path, err)
 	}
 	return os.Rename(tmp, path)
 }
 
-// quote põe entre aspas um valor com espaços ou caracteres especiais, para o
-// godotenv o ler tal e qual (ex: "/home/ana/Os Meus Vídeos").
+// quote wraps a value with spaces or special characters in quotes, so
+// godotenv reads it back as is (e.g. "/home/ana/My Videos").
 func quote(v string) string {
 	if strings.ContainsAny(v, " \t#\"'\\$") {
 		return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v) + `"`

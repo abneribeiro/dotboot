@@ -1,5 +1,4 @@
-// Package procio tem os utilitários de leitura do output dos processos
-// externos (yt-dlp, ffmpeg) usados pelo downloader e pelo motor.
+// Package procio reads the output of external processes (yt-dlp, ffmpeg).
 package procio
 
 import (
@@ -7,18 +6,17 @@ import (
 	"sync"
 )
 
-// LineWriter é um io.Writer que entrega o output linha a linha a uma função.
-// Corta tanto em "\n" como em "\r": as barras de progresso do ffmpeg
-// reescrevem a mesma linha com "\r", e sem isto só se via o progresso quando
-// a barra terminava.
+// LineWriter is an io.Writer that hands its input to a function line by line.
+// It splits on both "\n" and "\r": ffmpeg rewrites its progress line with
+// "\r", and without this the progress would only show once it finished.
 type LineWriter struct {
 	mu   sync.Mutex
 	buf  []byte
 	line func(string)
 }
 
-// NewLineWriter devolve um LineWriter que chama line para cada linha não
-// vazia, sem o terminador.
+// NewLineWriter returns a LineWriter that calls line for every non-empty line,
+// without its terminator.
 func NewLineWriter(line func(string)) *LineWriter {
 	return &LineWriter{line: line}
 }
@@ -40,8 +38,8 @@ func (w *LineWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Flush entrega o que ficou sem terminador (a última linha de um processo
-// que não acabou com "\n").
+// Flush hands over what is left without a terminator (the last line of a
+// process that did not end with "\n").
 func (w *LineWriter) Flush() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -51,8 +49,8 @@ func (w *LineWriter) Flush() {
 	}
 }
 
-// TailBuffer guarda só os últimos Max bytes escritos: chega para classificar
-// a linha final de erro sem acumular o progresso de uma playlist inteira.
+// TailBuffer keeps only the last Max bytes written: enough to classify the
+// final error line without holding a whole playlist's progress.
 type TailBuffer struct {
 	mu  sync.Mutex
 	buf []byte
@@ -75,7 +73,7 @@ func (t *TailBuffer) String() string {
 	return string(t.buf)
 }
 
-// Tail devolve os últimos n bytes de s.
+// Tail returns the last n bytes of s.
 func Tail(s string, n int) string {
 	if len(s) <= n {
 		return s

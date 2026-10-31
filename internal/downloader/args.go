@@ -6,129 +6,127 @@ import (
 	"strconv"
 )
 
-// Section define um recorte de vídeo com tempos de início e fim nos formatos
-// MM:SS ou HH:MM:SS, já validados pelo chamador (ver ValidateTime).
+// Section is a trim with start and end times as MM:SS or HH:MM:SS, already
+// validated by the caller (see ValidateRange).
 type Section struct {
 	Start string
 	End   string
 }
 
-// Options descreve uma invocação do yt-dlp. O bot e o modo CLI constroem
-// combinações diferentes destas opções (ver BuildArgs e os testes).
+// Options describes one yt-dlp invocation (see BuildArgs).
 type Options struct {
-	// URLs são os links a descarregar, passados como últimos argumentos.
+	// URLs are the links to download, passed as the last arguments.
 	URLs []string
 
-	// BatchFile é um ficheiro com um URL por linha (--batch-file, modo CLI).
+	// BatchFile is a file with one URL per line (--batch-file).
 	BatchFile string
 
-	// OutputTemplate é o valor completo de -o, construído pelo chamador.
+	// OutputTemplate is the full -o value, built by the caller.
 	OutputTemplate string
 
-	// Format é o valor de -f; vazio omite a flag (default do yt-dlp = melhor qualidade).
+	// Format is the -f value; empty omits the flag (yt-dlp's default is the
+	// best quality).
 	Format string
 
-	// FormatSort é o valor de -S/--format-sort (ver QualitySort e MP4Sort);
-	// vazio omite a flag.
+	// FormatSort is the -S/--format-sort value (see QualitySort and
+	// MP4Sort); empty omits the flag.
 	FormatSort string
 
-	// ExtractAudio, quando definido (ex: "mp3", "m4a", "wav"), guarda só o
-	// áudio nesse formato (-x --audio-format). Sem vídeo, o MergeFormat e a
-	// garantia de MP4 não se aplicam.
+	// ExtractAudio, when set (e.g. "mp3", "m4a"), keeps only the audio in
+	// that format (-x --audio-format). Without video, MergeFormat and the MP4
+	// guarantee do not apply.
 	ExtractAudio string
 
-	// EmbedMetadata embute título, artista e capa no ficheiro (CLI em modo
-	// áudio): é o que faz um MP3 aparecer com nome e capa no telemóvel.
+	// EmbedMetadata embeds title, artist and cover art: it is what makes an
+	// MP3 show up with a name and a cover on a phone.
 	EmbedMetadata bool
 
-	// CookiesFile passa --cookies: um ficheiro em formato Netscape com a
-	// sessão de um browser, que resolve a verificação "não és um robô" do
-	// YouTube, a restrição de idade e o conteúdo que exige login.
+	// CookiesFile passes --cookies: a Netscape-format file with a browser
+	// session, which gets past YouTube's "confirm you're not a bot" check,
+	// age restrictions and content that requires a login.
 	CookiesFile string
 
-	// JSRuntimes passa --js-runtimes (ex: "node"). Vazio deixa o default do
-	// yt-dlp, o Deno — o runtime que resolve os desafios JavaScript com que o
-	// YouTube protege os formatos.
+	// JSRuntimes passes --js-runtimes (e.g. "node"). Empty keeps yt-dlp's
+	// default, Deno, the runtime that solves the JavaScript challenges
+	// YouTube protects its formats with.
 	JSRuntimes string
 
-	// NoPlaylist impede o download de playlists inteiras quando o link
-	// aponta para um vídeo dentro de uma playlist (sempre no bot;
-	// no CLI apenas quando há recorte).
+	// NoPlaylist downloads only the video when the link points at a video
+	// inside a playlist (used for trims).
 	NoPlaylist bool
 
-	// Section adiciona --download-sections com --force-keyframes-at-cuts.
+	// Section adds --download-sections with --force-keyframes-at-cuts.
 	Section *Section
 
-	// MergeFormat força o contentor de saída ("mp4" no bot; vazio no CLI).
+	// MergeFormat forces the output container (e.g. "mp4").
 	MergeFormat string
 
-	// PrintToFile, quando definido, faz o yt-dlp escrever o caminho final do
-	// ficheiro nesse ficheiro (--print-to-file after_move:filepath). Implica
-	// --no-simulate: sem ele o --print-to-file cancelaria o download.
+	// PrintToFile, when set, makes yt-dlp write each final file path to that
+	// file (--print-to-file after_move:filepath). It implies --no-simulate:
+	// without it, --print-to-file would cancel the download.
 	PrintToFile string
 
-	// ArchiveFile ativa --download-archive: vídeos já registados são
-	// ignorados em execuções seguintes (semântica de "continuar" do CLI).
+	// ArchiveFile enables --download-archive: videos already recorded are
+	// skipped on later runs, which is what makes a rerun resume a playlist.
 	ArchiveFile string
 
-	// Continue retoma ficheiros .part deixados por execuções interrompidas.
+	// Continue resumes .part files left by interrupted runs.
 	Continue bool
 
-	// IgnoreErrors continua a playlist mesmo quando um vídeo falha.
+	// IgnoreErrors keeps going through a playlist when one video fails.
 	IgnoreErrors bool
 
-	// Progress, quando definido, recebe o progresso e as mudanças de fase do
-	// yt-dlp (ver ParseLine); BuildArgs acrescenta o --progress-template que
-	// as produz. As linhas de progresso não chegam ao Stdout.
+	// Progress, when set, receives yt-dlp's progress and phase changes (see
+	// ParseLine); BuildArgs adds the --progress-template that produces them.
+	// Progress lines never reach Stdout.
 	Progress func(Progress)
 
-	// Stdout/Stderr recebem o output do yt-dlp em direto (podem ser nulos).
+	// Stdout and Stderr receive yt-dlp's output as it runs (may be nil).
 	Stdout io.Writer
 	Stderr io.Writer
 }
 
-// QualitySort traduz uma qualidade pedida no CLI no -S do yt-dlp. "" ou
-// "best" devolvem vazio (o default do yt-dlp já é a melhor qualidade). Um
-// inteiro (ex: "1080", "720") devolve "res:N", que já é um limite com
-// fallback: o yt-dlp escolhe a maior resolução que não passe de N e, só se
-// não houver nenhuma, a mais pequena acima.
+// QualitySort turns a requested quality into yt-dlp's -S. "" or "best"
+// return empty (yt-dlp already defaults to the best quality). An integer
+// (e.g. "1080", "720") returns "res:N", which is a cap with a fallback:
+// yt-dlp picks the highest resolution not above N and, only when there is
+// none, the smallest one above.
 //
-// A "res" do yt-dlp é o lado MENOR do vídeo, e é por isso que não há um
-// filtro -f [height<=N]: num vídeo vertical (Shorts, TikTok, Reels) 720p é
-// 720x1280, e filtrar pela altura deitava-o fora e entregava 360x640. Sites
-// que não expõem a resolução (ex: Instagram) continuam a funcionar — sem o
-// valor, o critério apenas não desempata.
+// yt-dlp's "res" is the SHORT side of the video, which is why there is no
+// -f [height<=N] filter: a vertical 720p video (Shorts, TikTok, Reels) is
+// 720x1280, and filtering on height would throw it away and deliver
+// 360x640. Sites that do not expose the resolution (e.g. Instagram) still
+// work: without the value, the field just does not break ties.
 func QualitySort(q string) (string, error) {
 	if q == "" || q == "best" {
 		return "", nil
 	}
 	n, err := strconv.Atoi(q)
 	if err != nil || n < 1 {
-		return "", fmt.Errorf("qualidade inválida: %q (usa \"best\" ou uma resolução, ex: 1080, 720)", q)
+		return "", fmt.Errorf("invalid quality %q (use \"best\" or a resolution such as 1080 or 720)", q)
 	}
 	return fmt.Sprintf("res:%d", n), nil
 }
 
-// mp4CodecSort faz o yt-dlp preferir SDR e H.264 + AAC — o único par que
-// iPhones e Androids reproduzem nativamente. O vcodec e o acodec são os
-// campos do preset oficial "-t mp4" do yt-dlp. O hdr:sdr vem primeiro
-// porque o yt-dlp, por omissão, prefere HDR (hdr:12): um VP9 HDR convertido
-// para H.264 de 8 bits fica com as cores lavadas, sem a informação de HDR
-// que o leitor precisava para as mostrar.
+// mp4CodecSort makes yt-dlp prefer SDR and H.264 + AAC, the only pair that
+// iPhones and Android phones play natively. vcodec and acodec are the fields
+// of yt-dlp's own "-t mp4" preset. hdr:sdr comes first because yt-dlp
+// prefers HDR by default (hdr:12): an HDR VP9 converted to 8-bit H.264 looks
+// washed out, without the HDR metadata a player needs to show it right.
 const mp4CodecSort = "hdr:sdr,vcodec:h264,acodec:aac"
 
-// MP4Sort junta a preferência de codecs a uma ordenação de resolução.
-// resSort vazio significa "a maior resolução disponível".
+// MP4Sort adds the codec preference to a resolution sort. An empty resSort
+// means "the highest resolution available".
 //
-// A resolução vem SEMPRE primeiro: pedir -q 2160 tem de dar 2160p mesmo que
-// essa altura só exista em AV1 (é o EnsureMP4 que converte depois). Com o
-// vcodec à frente, um H.264 a 480p ganharia a um AV1 a 2160p e o -q seria
-// silenciosamente ignorado.
+// The resolution ALWAYS comes first: asking for 2160 must give 2160p even if
+// that size only exists in AV1 (EnsureMP4 converts it afterwards). With
+// vcodec first, a 480p H.264 would beat a 2160p AV1 and the requested
+// quality would be silently ignored.
 //
-// Como critério de desempate, porém, o vcodec vale ouro: entre dois formatos
-// da mesma altura escolhe o H.264, que dispensa qualquer recodificação. É isso
-// que faz o caminho comum (YouTube até 1080p, Instagram, TikTok, X) sair em
-// MP4 sem custo nenhum de CPU.
+// As a tie-breaker, though, vcodec is gold: between two formats of the same
+// size it picks H.264, which needs no re-encoding. That is what makes the
+// common path (YouTube up to 1080p, Instagram, TikTok, X) come out as MP4 at
+// no CPU cost.
 func MP4Sort(resSort string) string {
 	if resSort == "" {
 		resSort = "res"
@@ -136,8 +134,8 @@ func MP4Sort(resSort string) string {
 	return resSort + "," + mp4CodecSort
 }
 
-// BuildArgs constrói a lista de argumentos do yt-dlp a partir das opções.
-// É uma função pura para ser testável sem executar o yt-dlp.
+// BuildArgs builds yt-dlp's argument list from the options. It is pure so it
+// can be tested without running yt-dlp.
 func BuildArgs(o Options) []string {
 	var args []string
 
@@ -151,7 +149,7 @@ func BuildArgs(o Options) []string {
 		args = append(args, "--merge-output-format", o.MergeFormat)
 	}
 	if o.ExtractAudio != "" {
-		// --audio-quality 0 é o melhor VBR do codec; num WAV não tem efeito.
+		// --audio-quality 0 is the codec's best VBR setting.
 		args = append(args, "-x", "--audio-format", o.ExtractAudio, "--audio-quality", "0")
 	}
 	if o.EmbedMetadata {
@@ -178,8 +176,8 @@ func BuildArgs(o Options) []string {
 	if o.IgnoreErrors {
 		args = append(args, "--ignore-errors")
 	}
-	// --newline: uma linha por atualização de progresso, em vez de "\r",
-	// legível em logs e pelo ParseLine.
+	// --newline: one line per progress update instead of "\r", readable in
+	// logs and by ParseLine.
 	args = append(args, "--newline")
 	if o.Progress != nil {
 		args = append(args, "--progress-template", progressTemplate)
@@ -191,8 +189,8 @@ func BuildArgs(o Options) []string {
 		section := fmt.Sprintf("*%s-%s", o.Section.Start, o.Section.End)
 		args = append(args, "--download-sections", section, "--force-keyframes-at-cuts")
 	}
-	// --print-to-file implica --simulate; sem --no-simulate o yt-dlp
-	// escreveria o caminho mas não descarregaria nada.
+	// --print-to-file implies --simulate; without --no-simulate yt-dlp would
+	// write the path but download nothing.
 	if o.PrintToFile != "" {
 		args = append(args, "--print-to-file", "after_move:filepath", o.PrintToFile, "--no-simulate")
 	}

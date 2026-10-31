@@ -14,7 +14,7 @@ import (
 	"github.com/abneribeiro/dotboot/internal/downloader"
 )
 
-// fakeBin instala no PATH do teste um executável com o script sh dado.
+// fakeBin installs an executable with the given sh script on the test PATH.
 func fakeBin(t *testing.T, dir, name, script string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
@@ -22,8 +22,8 @@ func fakeBin(t *testing.T, dir, name, script string) {
 	}
 }
 
-// fakePath cria uma pasta só com os binários falsos e põe-na no PATH (com
-// /bin e /usr/bin, para o sh dos scripts ter o básico).
+// fakePath creates a folder with only the fake binaries and puts it on PATH
+// (with /bin and /usr/bin, so the scripts' sh has the basics).
 func fakePath(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -31,8 +31,8 @@ func fakePath(t *testing.T) string {
 	return dir
 }
 
-// fakeYtdlp imita o yt-dlp: escreve progresso no formato do template, cria o
-// ficheiro de saída a partir do -o e regista-o no --print-to-file.
+// fakeYtdlp imitates yt-dlp: it prints progress in the template's format,
+// creates the output file from -o and records it in --print-to-file.
 const fakeYtdlp = `
 out=""; print=""; ext=mp4
 while [ $# -gt 0 ]; do
@@ -43,17 +43,17 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-file=$(echo "$out" | sed "s/%(title)s/Teste/; s/%(id)s/abc/; s/%(ext)s/$ext/")
+file=$(echo "$out" | sed "s/%(title)s/Test/; s/%(id)s/abc/; s/%(ext)s/$ext/")
 echo "[download] Destination: $file"
 echo "dotboot-progress 512 1024 NA 2048.0 3"
 echo "dotboot-progress 1024 1024 NA 2048.0 0"
-echo "WARNING: só um aviso" >&2
+echo "WARNING: just a warning" >&2
 printf 'x' > "$file"
 [ -n "$print" ] && echo "$file" >> "$print"
 exit 0
 `
 
-// fakeFFprobe diz que tudo é H.264/AAC 8 bits: o EnsureMP4 não converte.
+// fakeFFprobe says everything is 8-bit H.264/AAC: EnsureMP4 does not convert.
 const fakeFFprobe = `
 case "$*" in
   *pix_fmt*) echo yuv420p ;;
@@ -63,7 +63,7 @@ case "$*" in
 esac
 `
 
-// collector guarda os eventos de um Reporter.
+// collector keeps a Reporter's events.
 type collector struct {
 	mu     sync.Mutex
 	events []Event
@@ -81,7 +81,7 @@ func (c *collector) has(pred func(Event) bool) bool {
 	return slices.ContainsFunc(c.events, pred)
 }
 
-func TestDownloadRunComBinariosFalsos(t *testing.T) {
+func TestDownloadRunWithFakeBinaries(t *testing.T) {
 	bin := fakePath(t)
 	fakeBin(t, bin, "yt-dlp", fakeYtdlp)
 	fakeBin(t, bin, "ffprobe", fakeFFprobe)
@@ -95,32 +95,56 @@ func TestDownloadRunComBinariosFalsos(t *testing.T) {
 	var c collector
 	res, err := d.Run(context.Background(), Env{TempDir: t.TempDir()}, c.report)
 	if err != nil {
-		t.Fatalf("Run falhou: %v", err)
+		t.Fatalf("Run failed: %v", err)
 	}
-	want := filepath.Join(out, "Teste [abc].mp4")
-	if !slices.Equal(res.Files, []string{want}) {
-		t.Errorf("Files = %v, esperado [%s]", res.Files, want)
+	want := filepath.Join(out, "Test [abc].mp4")
+	if !slices.Equal(res.Files, []string{want}) || len(res.Converted) != 0 {
+		t.Errorf("Files = %v, Converted = %v; want [%s] and nothing converted", res.Files, res.Converted, want)
 	}
-	// Tudo convertido: a lista de pendentes não pode ficar para trás.
+	// Everything converted: the pending list must not be left behind.
 	if _, err := os.Stat(filepath.Join(out, pendingFileName)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("a lista de pendentes devia ter sido apagada (%v)", err)
+		t.Errorf("the pending list should have been deleted (%v)", err)
 	}
 
-	if !c.has(func(e Event) bool { return e.Progress && e.Fraction == 0.5 && e.Speed == 2048 }) {
-		t.Error("faltou o evento de 50%")
+	checks := map[string]func(Event) bool{
+		"50% event":                func(e Event) bool { return e.Progress && e.Fraction == 0.5 && e.Speed == 2048 },
+		"100% event":               func(e Event) bool { return e.Progress && e.Fraction == 1 },
+		"the current file as Item": func(e Event) bool { return e.Item == "Test [abc].mp4" },
+		"stderr as Log":            func(e Event) bool { return e.Log == "WARNING: just a warning" },
 	}
-	if !c.has(func(e Event) bool { return e.Progress && e.Fraction == 1 }) {
-		t.Error("faltou o evento de 100%")
+	for name, pred := range checks {
+		if !c.has(pred) {
+			t.Errorf("missing: %s", name)
+		}
 	}
-	if !c.has(func(e Event) bool { return e.Item == "Teste [abc].mp4" }) {
-		t.Error("o ficheiro em curso devia chegar como Item")
-	}
-	if !c.has(func(e Event) bool { return e.Log == "WARNING: só um aviso" }) {
-		t.Error("o stderr devia chegar como Log")
-	}
-	// As linhas do template são só para a barra, não para o log.
 	if c.has(func(e Event) bool { return strings.Contains(e.Log, "dotboot-progress") }) {
-		t.Error("as linhas do template não deviam chegar ao log")
+		t.Error("template lines must not reach the log")
+	}
+}
+
+// A VP9 download is converted, and the Result says so with the source codec.
+func TestDownloadRunReportsConversions(t *testing.T) {
+	bin := fakePath(t)
+	fakeBin(t, bin, "yt-dlp", fakeYtdlp)
+	fakeBin(t, bin, "ffprobe", strings.Replace(fakeFFprobe, "echo h264", "echo vp9", 1))
+	fakeBin(t, bin, "ffmpeg", `for last; do :; done; printf 'x' > "$last"`)
+
+	out := t.TempDir()
+	d, err := NewDownload(DownloadInput{URLs: []string{"https://youtu.be/abc"}, OutputDir: out}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c collector
+	res, err := d.Run(context.Background(), Env{TempDir: t.TempDir()}, c.report)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	file := filepath.Join(out, "Test [abc].mp4")
+	if res.Converted[file] != "vp9" {
+		t.Errorf("Converted = %v, want %s from vp9", res.Converted, file)
+	}
+	if !c.has(func(e Event) bool { return e.Stage == StageConvert }) {
+		t.Error("missing the conversion stage")
 	}
 }
 
@@ -135,14 +159,14 @@ func TestDownloadRunAudio(t *testing.T) {
 	}
 	res, err := d.Run(context.Background(), Env{TempDir: t.TempDir()}, func(Event) {})
 	if err != nil {
-		t.Fatalf("Run falhou: %v", err)
+		t.Fatalf("Run failed: %v", err)
 	}
-	if !slices.Equal(res.Files, []string{filepath.Join(out, "Teste [abc].mp3")}) {
+	if !slices.Equal(res.Files, []string{filepath.Join(out, "Test [abc].mp3")}) {
 		t.Errorf("Files = %v", res.Files)
 	}
 }
 
-func TestDownloadRunFalhaSemNadaFeito(t *testing.T) {
+func TestDownloadRunFailsWithNothingDone(t *testing.T) {
 	bin := fakePath(t)
 	fakeBin(t, bin, "yt-dlp", `echo "ERROR: [youtube] abc: Video unavailable" >&2; exit 1`)
 
@@ -153,14 +177,14 @@ func TestDownloadRunFalhaSemNadaFeito(t *testing.T) {
 	_, err = d.Run(context.Background(), Env{TempDir: t.TempDir()}, func(Event) {})
 	var dlErr *downloader.DownloadError
 	if !errors.As(err, &dlErr) || dlErr.Kind != downloader.ErrUnavailable {
-		t.Fatalf("erro = %v, esperado ErrUnavailable", err)
+		t.Fatalf("error = %v, want ErrUnavailable", err)
 	}
 	if errors.Is(err, ErrPartial) {
-		t.Error("sem nada descarregado não é parcial")
+		t.Error("nothing downloaded is not a partial result")
 	}
 }
 
-func TestDownloadRunCancelado(t *testing.T) {
+func TestDownloadRunCanceled(t *testing.T) {
 	bin := fakePath(t)
 	fakeBin(t, bin, "yt-dlp", `exec sleep 5`)
 
@@ -171,30 +195,17 @@ func TestDownloadRunCancelado(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	if _, err := d.Run(ctx, Env{TempDir: t.TempDir()}, func(Event) {}); !errors.Is(err, context.Canceled) {
-		t.Errorf("erro = %v, esperado context.Canceled", err)
-	}
-}
-
-func TestFormatBytesEETA(t *testing.T) {
-	for in, want := range map[float64]string{512: "512 B", 2048: "2.0 KB", 3.5 * 1024 * 1024: "3.5 MB"} {
-		if got := FormatBytes(in); got != want {
-			t.Errorf("FormatBytes(%v) = %q, esperado %q", in, got, want)
-		}
-	}
-	for in, want := range map[time.Duration]string{-1: "", 42 * time.Second: "0:42", 3909 * time.Second: "1:05:09"} {
-		if got := FormatETA(in); got != want {
-			t.Errorf("FormatETA(%v) = %q, esperado %q", in, got, want)
-		}
+		t.Errorf("error = %v, want context.Canceled", err)
 	}
 }
 
 func TestPrepareOutputDir(t *testing.T) {
 	tmp := t.TempDir()
-	readOnly := filepath.Join(tmp, "so-leitura")
+	readOnly := filepath.Join(tmp, "read-only")
 	if err := os.Mkdir(readOnly, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	file := filepath.Join(tmp, "ficheiro")
+	file := filepath.Join(tmp, "file")
 	if err := os.WriteFile(file, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -205,29 +216,29 @@ func TestPrepareOutputDir(t *testing.T) {
 		wantErr bool
 		hint    bool
 	}{
-		{"cria a pasta", filepath.Join(tmp, "nova", "sub"), false, false},
-		{"pasta que já existe", tmp, false, false},
-		{"pasta só de leitura falha logo", readOnly, true, true},
-		{"um ficheiro no caminho", filepath.Join(file, "sub"), true, false},
+		{"creates the folder", filepath.Join(tmp, "new", "sub"), false, false},
+		{"existing folder", tmp, false, false},
+		{"read-only folder fails early", readOnly, true, true},
+		{"a file in the path", filepath.Join(file, "sub"), true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.wantErr && tt.dir == readOnly && os.Geteuid() == 0 {
-				t.Skip("o root escreve em pastas só de leitura")
+			if tt.dir == readOnly && os.Geteuid() == 0 {
+				t.Skip("root writes to read-only folders")
 			}
 			t.Setenv("DOTBOOT_DOCKER", "1")
 			err := PrepareOutputDir(tt.dir)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("PrepareOutputDir(%q) = %v, wantErr %v", tt.dir, err, tt.wantErr)
+				t.Fatalf("PrepareOutputDir(%q) = %v, want error: %v", tt.dir, err, tt.wantErr)
 			}
-			if err != nil && strings.Contains(err.Error(), "no Docker") != tt.hint {
-				t.Errorf("dica do Docker = %v, quero %v: %v", !tt.hint, tt.hint, err)
+			if err != nil && strings.Contains(err.Error(), "in Docker") != tt.hint {
+				t.Errorf("Docker hint = %v, want %v: %v", !tt.hint, tt.hint, err)
 			}
 			if err == nil {
 				entries, _ := os.ReadDir(tt.dir)
 				for _, e := range entries {
-					if strings.HasPrefix(e.Name(), ".dotboot-teste-") {
-						t.Errorf("ficou o ficheiro de teste %s", e.Name())
+					if strings.HasPrefix(e.Name(), ".dotboot-check-") {
+						t.Errorf("the check file %s was left behind", e.Name())
 					}
 				}
 			}
