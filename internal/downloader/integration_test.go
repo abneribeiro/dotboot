@@ -28,10 +28,11 @@ const testURLShort = "https://www.youtube.com/watch?v=C0DPdy98e4c"
 func assertPlayableOnPhones(t *testing.T, ctx context.Context, path string) {
 	t.Helper()
 
-	vcodec, acodec, pixFmt, err := probeStreams(ctx, path)
+	info, err := probeMedia(ctx, path)
 	if err != nil {
 		t.Fatalf("ffprobe failed on %s: %v", path, err)
 	}
+	vcodec, acodec, pixFmt := info.VCodec, info.ACodec, info.PixFmt
 	if !mp4Compatible(filepath.Ext(path), vcodec, acodec, pixFmt) {
 		t.Errorf("%s does not play on phones: ext=%s vcodec=%s acodec=%s pix_fmt=%s",
 			filepath.Base(path), filepath.Ext(path), vcodec, acodec, pixFmt)
@@ -98,12 +99,12 @@ func TestEnsureMP4OddDimensions(t *testing.T) {
 		t.Fatalf("EnsureMP4 failed with odd dimensions: %v", err)
 	}
 	assertPlayableOnPhones(t, ctx, got)
-	info, err := probe(ctx, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=width,height,profile", "-of", "csv=p=0", got)
+	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height,profile", "-of", "csv=p=0", got).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info != "High,320,240" && info != "320,240,High" {
+	if info := strings.TrimSpace(string(out)); info != "High,320,240" && info != "320,240,High" {
 		t.Errorf("profile and size = %q, want High at 320x240", info)
 	}
 }

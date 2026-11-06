@@ -53,15 +53,9 @@ printf 'x' > "$file"
 exit 0
 `
 
-// fakeFFprobe says everything is 8-bit H.264/AAC: EnsureMP4 does not convert.
-const fakeFFprobe = `
-case "$*" in
-  *pix_fmt*) echo yuv420p ;;
-  *a:0*) echo aac ;;
-  *v:0*) echo h264 ;;
-  *duration*) echo 10.0 ;;
-esac
-`
+// fakeFFprobe answers probeMedia's JSON: 8-bit H.264/AAC, so EnsureMP4 does
+// not convert.
+const fakeFFprobe = `echo '{"streams":[{"codec_type":"video","codec_name":"h264","pix_fmt":"yuv420p","width":1920,"height":1080,"disposition":{"attached_pic":0}},{"codec_type":"audio","codec_name":"aac","disposition":{"attached_pic":0}}],"format":{"duration":"10.000000"}}'`
 
 // collector keeps a Reporter's events.
 type collector struct {
@@ -126,7 +120,7 @@ func TestDownloadRunWithFakeBinaries(t *testing.T) {
 func TestDownloadRunReportsConversions(t *testing.T) {
 	bin := fakePath(t)
 	fakeBin(t, bin, "yt-dlp", fakeYtdlp)
-	fakeBin(t, bin, "ffprobe", strings.Replace(fakeFFprobe, "echo h264", "echo vp9", 1))
+	fakeBin(t, bin, "ffprobe", strings.Replace(fakeFFprobe, `"codec_name":"h264"`, `"codec_name":"vp9"`, 1))
 	fakeBin(t, bin, "ffmpeg", `for last; do :; done; printf 'x' > "$last"`)
 
 	out := t.TempDir()

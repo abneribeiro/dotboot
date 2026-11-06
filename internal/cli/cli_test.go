@@ -167,14 +167,9 @@ func fakeTools(t *testing.T, ytdlp string) {
 	dir := t.TempDir()
 	t.Setenv("PATH", dir+":/usr/bin:/bin")
 	scripts := map[string]string{
-		"yt-dlp": ytdlp,
-		"ffprobe": `case "$*" in
-  *pix_fmt*) echo yuv420p ;;
-  *a:0*) echo aac ;;
-  *width*) echo h264,1920,1080 ;;
-  *v:0*) echo h264 ;;
-esac`,
-		"ffmpeg": `exit 0`,
+		"yt-dlp":  ytdlp,
+		"ffprobe": `echo '{"streams":[{"codec_type":"video","codec_name":"h264","pix_fmt":"yuv420p","width":1920,"height":1080,"disposition":{"attached_pic":0}},{"codec_type":"audio","codec_name":"aac","disposition":{"attached_pic":0}}],"format":{"duration":"10.000000"}}'`,
+		"ffmpeg":  `exit 0`,
 	}
 	for name, script := range scripts {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0o755); err != nil {

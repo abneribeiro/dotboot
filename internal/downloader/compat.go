@@ -151,28 +151,6 @@ func moovFirstIn(r io.ReaderAt) (bool, error) {
 	}
 }
 
-// probeStreams returns the file's video codec, audio codec and pixel format.
-// Missing streams (silent video, audio-only file) come back as "", not as an
-// error: ffprobe exits 0 with empty output when the stream does not exist.
-func probeStreams(ctx context.Context, path string) (vcodec, acodec, pixFmt string, err error) {
-	vcodec, err = probe(ctx, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=codec_name", "-of", "csv=p=0", path)
-	if err != nil {
-		return "", "", "", err
-	}
-	pixFmt, err = probe(ctx, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=pix_fmt", "-of", "csv=p=0", path)
-	if err != nil {
-		return "", "", "", err
-	}
-	acodec, err = probe(ctx, "-v", "error", "-select_streams", "a:0",
-		"-show_entries", "stream=codec_name", "-of", "csv=p=0", path)
-	if err != nil {
-		return "", "", "", err
-	}
-	return vcodec, acodec, pixFmt, nil
-}
-
 // ConvertHooks lets the caller follow an EnsureMP4 conversion.
 type ConvertHooks struct {
 	// Start is called before converting. reencode is true when the video is
@@ -191,10 +169,11 @@ type ConvertHooks struct {
 // free; this one catches the rest. YouTube above 1080p only has VP9/AV1, and
 // no -S changes that.
 func EnsureMP4(ctx context.Context, path string, hooks ConvertHooks) (string, error) {
-	vcodec, acodec, pixFmt, err := probeStreams(ctx, path)
+	info, err := probeMedia(ctx, path)
 	if err != nil {
 		return path, fmt.Errorf("cannot inspect %s: %w", filepath.Base(path), err)
 	}
+	vcodec, acodec, pixFmt := info.VCodec, info.ACodec, info.PixFmt
 
 	// Without a video stream there is nothing to guarantee, and converting
 	// would produce an empty MP4. The file is left as it is.
@@ -230,13 +209,12 @@ func EnsureMP4(ctx context.Context, path string, hooks ConvertHooks) (string, er
 	tempPath := base + ".dotboot-compat" + mp4Ext
 
 	args := compatArgs(path, tempPath, vcodec, acodec, pixFmt)
+	// Without the duration there is no fraction: convert anyway, without a
+	// progress bar.
 	var duration float64
-	if hooks.Progress != nil {
-		// Without the duration there is no fraction: convert anyway, without
-		// a progress bar.
-		if duration, err = ProbeDuration(ctx, path); err == nil {
-			args = append([]string{"-progress", "pipe:1", "-nostats"}, args...)
-		}
+	if hooks.Progress != nil && info.Duration > 0 {
+		duration = info.Duration
+		args = append([]string{"-progress", "pipe:1", "-nostats"}, args...)
 	}
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)

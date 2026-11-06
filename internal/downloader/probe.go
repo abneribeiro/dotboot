@@ -2,51 +2,101 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
 )
 
-// probe runs ffprobe and returns the first line of its output.
-func probe(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "ffprobe", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("ffprobe failed: %w", err)
-	}
-	return strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]), nil
+// mediaInfo is what dotboot needs to know about a file, read with a single
+// ffprobe run. Missing streams leave their fields empty: an empty VCodec is a
+// file without video (audio only), an empty ACodec a silent video.
+type mediaInfo struct {
+	VCodec string
+	PixFmt string
+	Width  int
+	Height int
+	ACodec string
+	// Duration in seconds; 0 when ffprobe does not know it.
+	Duration float64
 }
 
-// ProbeDuration returns the file's duration in seconds.
-func ProbeDuration(ctx context.Context, path string) (float64, error) {
-	out, err := probe(ctx, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path)
+// probeArgs asks ffprobe for every stream's type, codec, pixel format and
+// size, whether it is a cover (attached_pic), and the duration, as JSON.
+func probeArgs(path string) []string {
+	return []string{"-v", "error",
+		"-show_entries", "stream=codec_type,codec_name,pix_fmt,width,height:stream_disposition=attached_pic:format=duration",
+		"-of", "json", path}
+}
+
+// probeMedia runs ffprobe once on path. One run replaces the four that the
+// codecs, pixel format and duration used to take, which adds up on a
+// playlist.
+func probeMedia(ctx context.Context, path string) (mediaInfo, error) {
+	out, err := exec.CommandContext(ctx, "ffprobe", probeArgs(path)...).Output()
 	if err != nil {
-		return 0, err
+		return mediaInfo{}, fmt.Errorf("ffprobe failed: %w", err)
 	}
-	d, err := strconv.ParseFloat(out, 64)
-	if err != nil {
-		return 0, fmt.Errorf("unreadable duration from ffprobe: %q", out)
+	return parseProbe(out)
+}
+
+// ffprobeOutput is the part of ffprobe's JSON that probeArgs asks for.
+type ffprobeOutput struct {
+	Streams []struct {
+		CodecType   string `json:"codec_type"`
+		CodecName   string `json:"codec_name"`
+		PixFmt      string `json:"pix_fmt"`
+		Width       int    `json:"width"`
+		Height      int    `json:"height"`
+		Disposition struct {
+			AttachedPic int `json:"attached_pic"`
+		} `json:"disposition"`
+	} `json:"streams"`
+	Format struct {
+		Duration string `json:"duration"`
+	} `json:"format"`
+}
+
+// parseProbe reads ffprobe's JSON. It keeps the first video stream that is
+// not a cover (an MP3 or M4A shows its artwork as an mjpeg/png "video") and
+// the first audio stream. It is pure, for tests.
+func parseProbe(data []byte) (mediaInfo, error) {
+	var out ffprobeOutput
+	if err := json.Unmarshal(data, &out); err != nil {
+		return mediaInfo{}, fmt.Errorf("unreadable ffprobe output: %w", err)
 	}
-	return d, nil
+	var info mediaInfo
+	for _, s := range out.Streams {
+		switch {
+		case s.CodecType == "video" && s.Disposition.AttachedPic == 0 && info.VCodec == "":
+			info.VCodec, info.PixFmt, info.Width, info.Height = s.CodecName, s.PixFmt, s.Width, s.Height
+		case s.CodecType == "audio" && info.ACodec == "":
+			info.ACodec = s.CodecName
+		}
+	}
+	// "N/A" or an absent duration leaves 0: the conversion runs without a
+	// progress bar.
+	if d, err := strconv.ParseFloat(out.Format.Duration, 64); err == nil && d > 0 {
+		info.Duration = d
+	}
+	return info, nil
 }
 
 // Describe summarizes a downloaded file for the user, e.g. "H.264 · 1920×1080"
 // or "AAC" for audio. It returns "" when ffprobe cannot read the file.
 func Describe(ctx context.Context, path string) string {
-	video, err := probe(ctx, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=codec_name,width,height", "-of", "csv=p=0", path)
-	if err == nil {
-		if f := strings.Split(video, ","); len(f) == 3 && f[0] != "mjpeg" && f[0] != "png" {
-			return fmt.Sprintf("%s · %s×%s", codecName(f[0]), f[1], f[2])
-		}
-	}
-	audio, err := probe(ctx, "-v", "error", "-select_streams", "a:0",
-		"-show_entries", "stream=codec_name", "-of", "csv=p=0", path)
-	if err != nil || audio == "" {
+	info, err := probeMedia(ctx, path)
+	if err != nil {
 		return ""
 	}
-	return codecName(audio)
+	switch {
+	case info.VCodec != "":
+		return fmt.Sprintf("%s · %d×%d", codecName(info.VCodec), info.Width, info.Height)
+	case info.ACodec != "":
+		return codecName(info.ACodec)
+	}
+	return ""
 }
 
 // codecName turns an ffprobe codec name into the one people know.
