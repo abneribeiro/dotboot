@@ -56,7 +56,11 @@ fi
 case "$mode" in
 docker)
 	if [ "$docker_ok" = 0 ]; then
-		echo "  ✗ The Docker install needs Docker (https://docs.docker.com/get-docker/)." >&2
+		if [ "$(uname -s)" = Darwin ]; then
+			echo "  ✗ The Docker install needs Docker: brew install colima docker docker-buildx && colima start" >&2
+		else
+			echo "  ✗ The Docker install needs Docker (https://docs.docker.com/engine/install/)." >&2
+		fi
 		exit 1
 	fi
 	make docker-build

@@ -57,6 +57,23 @@ Download the `.zip` for your architecture from
 winget install yt-dlp.yt-dlp Gyan.FFmpeg DenoLand.Deno
 ```
 
+### Docker (nothing else on your machine)
+
+The image brings yt-dlp, FFmpeg and Deno; `dotboot` becomes a small script
+that runs it as your user, with your home mounted at the same path.
+
+```bash
+# macOS: a Docker engine without Docker Desktop (Linux and WSL: Docker Engine)
+brew install colima docker docker-buildx && colima start
+
+git clone https://github.com/abneribeiro/dotboot && cd dotboot
+make docker-build && make install-docker
+```
+
+On macOS, Docker runs in a VM that only sees your home, so save downloads
+inside it (e.g. `-o ~/Videos`). Run `colima start` after a reboot, or
+`brew services start colima` to start it at login. The image takes about 1 GB.
+
 ### From source
 
 ```bash
@@ -64,7 +81,8 @@ git clone https://github.com/abneribeiro/dotboot && cd dotboot
 make setup   # native (Go 1.26+) or Docker, then the output folder
 ```
 
-**Uninstall**: `rm ~/.local/bin/dotboot`, and optionally `~/.config/dotboot`.
+**Uninstall**: `rm ~/.local/bin/dotboot`, and optionally `~/.config/dotboot`
+(and `docker rmi dotboot:latest` for Docker).
 
 ## Usage
 

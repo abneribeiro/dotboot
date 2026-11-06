@@ -58,10 +58,12 @@ RUN apt-get update && \
 # The standalone binary is self-contained (no Python needed) and ships
 # yt-dlp-ejs, the scripts that solve YouTube's JavaScript challenges.
 RUN set -eux; \
-    case "${TARGETARCH:-amd64}" in \
+    # TARGETARCH is only set by BuildKit; without it, use the image's own.
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "${arch}" in \
         amd64) asset=yt-dlp_linux ;; \
         arm64) asset=yt-dlp_linux_aarch64 ;; \
-        *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+        *) echo "unsupported architecture: ${arch}" >&2; exit 1 ;; \
     esac; \
     release="https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}"; \
     cd /tmp; \
