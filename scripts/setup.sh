@@ -15,7 +15,7 @@ if [ "$YES" = 1 ] || [ ! -t 0 ]; then
 fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
-step() { printf '\n\033[1;31m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
+step() { printf '\n\033[1;38;2;255;135;113m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 
 step "1/4 Requirements"
 docker_ok=0

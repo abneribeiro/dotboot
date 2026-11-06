@@ -18,15 +18,15 @@ import (
 	"github.com/abneribeiro/dotboot/internal/jobs"
 )
 
-func TestBytesAndDuration(t *testing.T) {
+func TestHumanBytesAndRemaining(t *testing.T) {
 	for in, want := range map[float64]string{512: "512 B", 2048: "2.0 KB", 3.5 * 1024 * 1024: "3.5 MB"} {
-		if got := Bytes(in); got != want {
-			t.Errorf("Bytes(%v) = %q, want %q", in, got, want)
+		if got := humanBytes(in); got != want {
+			t.Errorf("humanBytes(%v) = %q, want %q", in, got, want)
 		}
 	}
 	for in, want := range map[time.Duration]string{-1: "", 42 * time.Second: "0:42", 3909 * time.Second: "1:05:09"} {
-		if got := Duration(in); got != want {
-			t.Errorf("Duration(%v) = %q, want %q", in, got, want)
+		if got := remaining(in); got != want {
+			t.Errorf("remaining(%v) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -175,6 +175,42 @@ func TestPrintHelpAlignsColumns(t *testing.T) {
 	}
 	if len(cols) != 2 || cols[0] != cols[1] {
 		t.Errorf("descriptions are not aligned:\n%s", out.String())
+	}
+}
+
+// The pulse of an indeterminate bar always fills the bar's width exactly,
+// whatever frame it is on, including when it enters and leaves.
+func TestIndeterminateBarKeepsItsWidth(t *testing.T) {
+	m := newProgressModel("video", func() {})
+	for ticks := range 40 {
+		m.ticks = ticks
+		if w := lipgloss.Width(m.renderBar(20)); w != 20 {
+			t.Fatalf("tick %d: bar is %d columns, want 20", ticks, w)
+		}
+	}
+}
+
+// Doctor and config rows line up their second column, even with styled
+// names.
+func TestPrintersAlignColumns(t *testing.T) {
+	var out bytes.Buffer
+	PrintDoctor(&out, []doctor.Check{{Name: "yt-dlp", Detail: "first"}, {Name: "JavaScript", Detail: "second"}})
+	PrintConfig(&out, "/cfg", []Setting{
+		{Key: "output", Value: "third", Description: "d"},
+		{Key: "cookies", Value: "fourth", Description: "d"},
+	})
+	got := out.String()
+	col := func(word string) int {
+		for line := range strings.SplitSeq(got, "\n") {
+			if i := strings.Index(line, word); i >= 0 {
+				return lipgloss.Width(line[:i])
+			}
+		}
+		t.Fatalf("missing %q in:\n%s", word, got)
+		return 0
+	}
+	if col("first") != col("second") || col("third") != col("fourth") {
+		t.Errorf("columns are not aligned:\n%s", got)
 	}
 }
 

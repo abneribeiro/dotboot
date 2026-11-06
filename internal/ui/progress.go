@@ -62,12 +62,19 @@ func newProgressModel(title string, cancel context.CancelFunc) *progressModel {
 		fraction: -1,
 		eta:      -1,
 		spinner:  spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(accentStyle)),
-		bar: progress.New(
-			progress.WithColors(colorRedHot, colorRed),
-			progress.WithFillCharacters('█', '░'),
-			progress.WithoutPercentage(),
-		),
+		bar:      newBar(),
 	}
+}
+
+// newBar is the determinate bar: solid coral over a dark track.
+func newBar() progress.Model {
+	bar := progress.New(
+		progress.WithColors(colorAccent),
+		progress.WithFillCharacters('█', '░'),
+		progress.WithoutPercentage(),
+	)
+	bar.EmptyColor = colorTrack
+	return bar
 }
 
 func (m *progressModel) Init() tea.Cmd {
@@ -183,12 +190,12 @@ func (m *progressModel) render() string {
 func (m *progressModel) stats() string {
 	var parts []string
 	if m.fraction >= 0 {
-		parts = append(parts, strongStyle.Render(fmt.Sprintf("%3.0f%%", m.fraction*100)))
+		parts = append(parts, numberStyle.Render(fmt.Sprintf("%3.0f%%", m.fraction*100)))
 	}
 	if m.speed > 0 {
-		parts = append(parts, mutedStyle.Render(Bytes(m.speed)+"/s"))
+		parts = append(parts, mutedStyle.Render(humanBytes(m.speed)+"/s"))
 	}
-	if left := Duration(m.eta); left != "" && m.speed > 0 {
+	if left := remaining(m.eta); left != "" && m.speed > 0 {
 		parts = append(parts, mutedStyle.Render(left+" left"))
 	}
 	return strings.Join(parts, "  ")
@@ -201,17 +208,13 @@ func (m *progressModel) renderBar(width int) string {
 		m.bar.SetWidth(width)
 		return m.bar.ViewAs(m.fraction)
 	}
-	span := width + pulseWidth
-	pos := m.ticks%span - pulseWidth
-	var b strings.Builder
-	for i := range width {
-		if i >= pos && i < pos+pulseWidth {
-			b.WriteString(accentStyle.Render("█"))
-		} else {
-			b.WriteString(trackStyle.Render("░"))
-		}
-	}
-	return b.String()
+	// The pulse enters from the left and leaves on the right; the visible
+	// part is [start, end).
+	pos := m.ticks%(width+pulseWidth) - pulseWidth
+	start, end := max(pos, 0), min(pos+pulseWidth, width)
+	return trackStyle.Render(strings.Repeat("░", start)) +
+		accentStyle.Render(strings.Repeat("█", max(end-start, 0))) +
+		trackStyle.Render(strings.Repeat("░", width-max(end, start)))
 }
 
 // RunWithProgress runs the job while drawing its progress on out, a

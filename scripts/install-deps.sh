@@ -33,10 +33,10 @@ for arg in "$@"; do
 done
 
 have() { command -v "$1" >/dev/null 2>&1; }
-ok() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
-fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; }
-step() { printf '\n\033[1;31m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
+ok() { printf '  \033[38;2;86;213;142m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[38;2;242;196;109m!\033[0m %s\n' "$*"; }
+fail() { printf '  \033[38;2;255;135;113m✗\033[0m %s\n' "$*"; }
+step() { printf '\n\033[1;38;2;255;135;113m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 
 confirm() {
 	local answer

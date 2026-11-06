@@ -47,9 +47,9 @@ endef
 ##@ Getting started
 
 help: ## Show this help
-	@awk 'BEGIN {FS = ":.*## "; printf "Usage: make \033[31m<target>\033[0m [VAR=value]\n"} \
+	@awk 'BEGIN {FS = ":.*## "; printf "Usage: make \033[38;2;255;135;113m<target>\033[0m [VAR=value]\n"} \
 		/^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} \
-		/^[a-zA-Z0-9_-]+:.*## / {printf "  \033[31m%-24s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+		/^[a-zA-Z0-9_-]+:.*## / {printf "  \033[38;2;255;135;113m%-24s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 setup: ## Guided setup: install dotboot (Docker or native) and pick the output folder
 	@BINDIR="$(BINDIR)" IMAGE="$(IMAGE)" scripts/setup.sh

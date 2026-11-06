@@ -12,9 +12,9 @@ WhatsApp). Commands:
 - `doctor`, `config [key] [value]`, `version`, `help [command]`.
 - `dotboot <url>` is a shortcut for `dotboot video <url>`.
 
-Downloads show a Bubble Tea progress view (spinner, red bar, speed, ETA,
+Downloads show a Bubble Tea progress view (spinner, coral bar, speed, ETA,
 latest warning) on a terminal, and plain lines otherwise. Everything else
-(help, results, errors, doctor, config) is printed with Lip Gloss in a red
+(help, results, errors, doctor, config) is printed with Lip Gloss in a coral
 theme.
 
 **Stack**: Go 1.26+ (built with 1.27), Bubble Tea v2, Bubbles v2, Lip Gloss v2
@@ -80,7 +80,7 @@ cmd/dotboot/main.go    Entry point: config.LoadFiles + Load, slog, signals
 internal/cli/          Commands: flag parsing (short and long names,
                        parseInterspersed), help definitions, dispatch to the
                        engine, exit codes. Picks the JS runtime per download.
-internal/ui/           The look. theme.go (red palette and styles),
+internal/ui/           The look. theme.go (coral/green palette and styles),
                        progress.go (Bubble Tea model, RunWithProgress,
                        RunPlain), print.go (help, result summary, errors,
                        doctor, config), format.go (bytes, durations).

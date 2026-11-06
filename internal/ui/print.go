@@ -46,13 +46,12 @@ func PrintHelp(w io.Writer, h Help) {
 				b.WriteString("  " + r[0] + "\n")
 				continue
 			}
-			pad := strings.Repeat(" ", width-lipgloss.Width(r[0]))
-			b.WriteString("  " + strongStyle.Render(r[0]) + pad + "  " + mutedStyle.Render(r[1]) + "\n")
+			b.WriteString("  " + padRight(strongStyle.Render(r[0]), width) + "  " + mutedStyle.Render(r[1]) + "\n")
 		}
 	}
 	if h.Footer != "" {
 		b.WriteString("\n")
-		for _, line := range strings.Split(h.Footer, "\n") {
+		for line := range strings.SplitSeq(h.Footer, "\n") {
 			b.WriteString(mutedStyle.Render(line) + "\n")
 		}
 	}
@@ -81,17 +80,15 @@ func PrintResult(w io.Writer, res jobs.Result, describe Describer) {
 	}
 	width = min(width, 60)
 	for i, f := range res.Files {
-		name := names[i]
-		name = truncate(name, width)
-		line := okStyle.Render(iconOK) + " " + name
+		name := truncate(names[i], width)
 		info := describe(f)
 		if source, ok := res.Converted[f]; ok {
 			info += " (converted from " + strings.ToUpper(source) + ")"
 		}
 		if info != "" {
-			line += strings.Repeat(" ", width-lipgloss.Width(name)+2) + mutedStyle.Render(info)
+			name = padRight(name, width) + "  " + mutedStyle.Render(info)
 		}
-		b.WriteString(line + "\n")
+		b.WriteString(okStyle.Render(iconOK) + " " + name + "\n")
 	}
 	b.WriteString(mutedStyle.Render("Saved to "+res.OutputDir) + "\n")
 	lipgloss.Fprint(w, b.String())
@@ -128,7 +125,7 @@ func PrintDoctor(w io.Writer, checks []doctor.Check) {
 	b.WriteString(badge() + " " + mutedStyle.Render("doctor") + "\n\n")
 	width := 0
 	for _, c := range checks {
-		width = max(width, len(c.Name))
+		width = max(width, lipgloss.Width(c.Name))
 	}
 	var warnings, failures int
 	for _, c := range checks {
@@ -141,8 +138,7 @@ func PrintDoctor(w io.Writer, checks []doctor.Check) {
 			icon = errStyle.Render(iconFail)
 			failures++
 		}
-		b.WriteString("  " + icon + " " + strongStyle.Render(c.Name) + strings.Repeat(" ", width-len(c.Name)+2) +
-			c.Detail + "\n")
+		b.WriteString("  " + icon + " " + padRight(strongStyle.Render(c.Name), width) + "  " + c.Detail + "\n")
 		if c.Fix != "" {
 			b.WriteString("    " + strings.Repeat(" ", width+2) + mutedStyle.Render("→ "+c.Fix) + "\n")
 		}
@@ -170,14 +166,14 @@ func PrintConfig(w io.Writer, path string, settings []Setting) {
 	b.WriteString(badge() + " " + mutedStyle.Render("config") + "\n\n")
 	width := 0
 	for _, s := range settings {
-		width = max(width, len(s.Key))
+		width = max(width, lipgloss.Width(s.Key))
 	}
 	for _, s := range settings {
 		value := s.Value
 		if value == "" {
 			value = mutedStyle.Render("(not set)")
 		}
-		b.WriteString("  " + strongStyle.Render(s.Key) + strings.Repeat(" ", width-len(s.Key)+2) + value + "\n")
+		b.WriteString("  " + padRight(strongStyle.Render(s.Key), width) + "  " + value + "\n")
 		b.WriteString("  " + strings.Repeat(" ", width+2) + mutedStyle.Render(s.Description) + "\n")
 	}
 	b.WriteString("\n" + mutedStyle.Render("Stored in "+path+". Change one with: dotboot config <key> <value>") + "\n")
@@ -204,6 +200,12 @@ func plural(n int, one, many string) string {
 		return "1 " + one
 	}
 	return fmt.Sprintf("%d %s", n, many)
+}
+
+// padRight pads s with spaces to width display columns, ignoring ANSI codes:
+// it is what keeps the columns of every printer aligned.
+func padRight(s string, width int) string {
+	return s + strings.Repeat(" ", max(width-lipgloss.Width(s), 0))
 }
 
 // truncate cuts s to width display columns, ending with "…".

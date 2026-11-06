@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// Bytes writes a size for people (1.4 MB, 820 KB).
-func Bytes(b float64) string {
+// humanBytes writes a size for people (1.4 MB, 820 KB).
+func humanBytes(b float64) string {
 	const unit = 1024
 	if b < unit {
 		return fmt.Sprintf("%.0f B", b)
@@ -16,8 +16,8 @@ func Bytes(b float64) string {
 	return fmt.Sprintf("%.1f %cB", b/math.Pow(unit, float64(exp)), "KMGT"[exp-1])
 }
 
-// Duration writes a remaining time (0:42, 1:05:09); empty when unknown.
-func Duration(d time.Duration) string {
+// remaining writes a remaining time (0:42, 1:05:09); empty when unknown.
+func remaining(d time.Duration) string {
 	if d < 0 {
 		return ""
 	}
