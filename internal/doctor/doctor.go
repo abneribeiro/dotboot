@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -123,7 +124,7 @@ func checkYtdlp(ctx context.Context, sys system) Check {
 func checkTool(ctx context.Context, sys system, name, prefix string) Check {
 	c := Check{Name: name}
 	if _, err := sys.lookPath(name); err != nil {
-		c.Level, c.Detail, c.Fix = LevelFail, "not found", "make deps (or: sudo apt install ffmpeg)"
+		c.Level, c.Detail, c.Fix = LevelFail, "not found", "make deps (or: "+ffmpegInstall(runtime.GOOS)+")"
 		return c
 	}
 	out, err := sys.output(ctx, name, "-version")
@@ -136,6 +137,17 @@ func checkTool(ctx context.Context, sys system, name, prefix string) Check {
 		c.Detail = "found"
 	}
 	return c
+}
+
+// ffmpegInstall is the usual command to install ffmpeg on goos.
+func ffmpegInstall(goos string) string {
+	switch goos {
+	case "darwin":
+		return "brew install ffmpeg"
+	case "windows":
+		return "winget install ffmpeg"
+	}
+	return "sudo apt install ffmpeg"
 }
 
 func checkJSRuntime(ctx context.Context, cfg *config.Config, sys system) Check {

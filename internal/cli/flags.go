@@ -17,14 +17,14 @@ func newFlagSet(name string) *flag.FlagSet {
 // stringFlag registers a string flag under every comma-separated name, so
 // "-q" and "--quality" set the same value.
 func stringFlag(fs *flag.FlagSet, p *string, names string) {
-	for _, n := range strings.Split(names, ",") {
+	for n := range strings.SplitSeq(names, ",") {
 		fs.StringVar(p, n, "", "")
 	}
 }
 
 // boolFlag is stringFlag for booleans.
 func boolFlag(fs *flag.FlagSet, p *bool, names string) {
-	for _, n := range strings.Split(names, ",") {
+	for n := range strings.SplitSeq(names, ",") {
 		fs.BoolVar(p, n, false, "")
 	}
 }

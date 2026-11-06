@@ -46,7 +46,7 @@ func ValidateURL(raw string) error {
 // parseTime turns an already validated time into seconds.
 func parseTime(s string) int {
 	total := 0
-	for _, p := range strings.Split(s, ":") {
+	for p := range strings.SplitSeq(s, ":") {
 		n, _ := strconv.Atoi(p)
 		total = total*60 + n
 	}

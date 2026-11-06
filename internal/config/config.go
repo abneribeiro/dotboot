@@ -9,11 +9,14 @@ package config
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -40,8 +43,8 @@ type Config struct {
 	CookiesFile string
 
 	// JSRuntimes is passed to yt-dlp as --js-runtimes (DOTBOOT_JS_RUNTIMES,
-	// e.g. "node"). Empty uses yt-dlp's default, Deno; main sets it to "node"
-	// when Deno is missing and node is there.
+	// e.g. "node"). Empty uses yt-dlp's default, Deno; the download commands
+	// pick "node" when Deno is missing and node is there (cli.pickJSRuntime).
 	JSRuntimes string
 }
 
@@ -170,7 +173,7 @@ func Save(path string, values map[string]string) error {
 		if err := scanner.Err(); err != nil {
 			return fmt.Errorf("reading %s: %w", path, err)
 		}
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
 
@@ -189,12 +192,7 @@ func Save(path string, values map[string]string) error {
 		}
 	}
 
-	keys := make([]string, 0, len(values))
-	for k := range values {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(values)) {
 		if !done[k] && values[k] != "" {
 			out = append(out, k+"="+quote(values[k]))
 		}
@@ -211,7 +209,11 @@ func Save(path string, values map[string]string) error {
 	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("cannot write %s: %w", path, err)
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp) // the old file is still in place; the copy is useless
+		return fmt.Errorf("cannot write %s: %w", path, err)
+	}
+	return nil
 }
 
 // quote wraps a value with spaces or special characters in quotes, so

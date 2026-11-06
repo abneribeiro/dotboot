@@ -133,7 +133,7 @@ func (a *App) download(ctx context.Context, k kind, args []string) int {
 	}
 	var res jobs.Result
 	if a.Interactive {
-		res, err = ui.RunWithProgress(ctx, a.Stdout, title(k, d), run)
+		res, err = ui.RunWithProgress(ctx, a.Stdout, title(d), run)
 	} else {
 		res, err = ui.RunPlain(ctx, a.Stdout, run)
 	}
@@ -161,7 +161,7 @@ func (a *App) download(ctx context.Context, k kind, args []string) int {
 }
 
 // title is the progress view's header: the command and what was asked.
-func title(k kind, d *jobs.Download) string {
+func title(d *jobs.Download) string {
 	switch {
 	case d.Audio():
 		return "audio · " + d.Format
@@ -170,7 +170,7 @@ func title(k kind, d *jobs.Download) string {
 	case d.Height > 0:
 		return fmt.Sprintf("video · up to %dp", d.Height)
 	}
-	return string(k) + " · best quality"
+	return "video · best quality"
 }
 
 // pickJSRuntime returns the --js-runtimes value for yt-dlp, which solves

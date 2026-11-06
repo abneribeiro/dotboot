@@ -132,3 +132,15 @@ func TestVersionAfter(t *testing.T) {
 		}
 	}
 }
+
+func TestFFmpegInstall(t *testing.T) {
+	for goos, want := range map[string]string{
+		"darwin":  "brew install ffmpeg",
+		"windows": "winget install ffmpeg",
+		"linux":   "sudo apt install ffmpeg",
+	} {
+		if got := ffmpegInstall(goos); got != want {
+			t.Errorf("ffmpegInstall(%q) = %q, want %q", goos, got, want)
+		}
+	}
+}

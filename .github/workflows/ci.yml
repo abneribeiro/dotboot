@@ -21,7 +21,7 @@ jobs:
         run: |
           unformatted="$(gofmt -l cmd internal)"
           if [ -n "$unformatted" ]; then
-            echo "Por formatar (make fmt):"
+            echo "Unformatted (make fmt):"
             echo "$unformatted"
             exit 1
           fi
