@@ -5,6 +5,8 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Rebuilds the release of an existing tag (pick the tag as the ref).
+  workflow_dispatch:
 
 permissions:
   contents: write
