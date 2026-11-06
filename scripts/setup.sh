@@ -57,7 +57,7 @@ case "$mode" in
 docker)
 	if [ "$docker_ok" = 0 ]; then
 		if [ "$(uname -s)" = Darwin ]; then
-			echo "  ✗ The Docker install needs Docker: brew install colima docker docker-buildx && colima start" >&2
+			echo "  ✗ The Docker install needs Docker: brew install --cask orbstack && open -a OrbStack" >&2
 		else
 			echo "  ✗ The Docker install needs Docker (https://docs.docker.com/engine/install/)." >&2
 		fi

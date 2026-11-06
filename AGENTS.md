@@ -214,8 +214,9 @@ mounted at the same path, `-t` when there is a terminal (for the progress
 view), and same-path mounts for absolute paths outside the home: `-o`/
 `--output` values, the output and cookies paths from the environment,
 `./.env` or `config.env`, and every `/mnt/<drive>` on WSL. On macOS the
-engine runs in a VM (Colima shares only the home), so the wrapper warns when
-it mounts a path outside the home. The image sets
+engine runs in a VM; with the `colima` context, which shares only the home,
+the wrapper warns when it mounts a path outside it (OrbStack shares more).
+The image sets
 `DOTBOOT_DOCKER=1` so `jobs.PrepareOutputDir` can explain an unreachable
 folder.
 

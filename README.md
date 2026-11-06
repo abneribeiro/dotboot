@@ -63,16 +63,17 @@ The image brings yt-dlp, FFmpeg and Deno; `dotboot` becomes a small script
 that runs it as your user, with your home mounted at the same path.
 
 ```bash
-# macOS: a Docker engine without Docker Desktop (Linux and WSL: Docker Engine)
-brew install colima docker docker-buildx && colima start
+# macOS: OrbStack, the lightest Docker engine (free for personal use)
+brew install --cask orbstack && open -a OrbStack
+# Linux and WSL: Docker Engine (https://docs.docker.com/engine/install/)
 
 git clone https://github.com/abneribeiro/dotboot && cd dotboot
 make docker-build && make install-docker
 ```
 
-On macOS, Docker runs in a VM that only sees your home, so save downloads
-inside it (e.g. `-o ~/Videos`). Run `colima start` after a reboot, or
-`brew services start colima` to start it at login. The image takes about 1 GB.
+The image takes about 1 GB. For an open-source engine on macOS, use Colima
+instead (`brew install colima docker docker-buildx && colima start`); it only
+shares your home, so save downloads inside it (e.g. `-o ~/Videos`).
 
 ### From source
 

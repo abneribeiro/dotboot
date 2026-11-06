@@ -31,17 +31,22 @@ fi
 # mount_same mounts a host path at the same place in the container, unless
 # it is inside the home (already mounted) or mounted already.
 #
-# On macOS Docker runs in a VM that only sees the folders shared with it (the
-# home by default, with Colima): elsewhere the container gets an empty folder
-# it cannot write to, so say so up front.
+# Colima's VM only sees the home by default: elsewhere the container gets an
+# empty folder it cannot write to, so say so up front. OrbStack and Docker
+# Desktop share more of macOS and need no warning.
 mounted=$'\n'
+colima=""
 mount_same() {
 	local path=$1
 	case "$path" in "$HOME" | "$HOME"/*) return ;; esac
 	case "$mounted" in *$'\n'"$path"$'\n'*) return ;; esac
-	if [ "$(uname -s)" = Darwin ]; then
-		echo "dotboot: $path is outside your home; on macOS Docker only sees the folders shared" \
-			"with its VM (Colima: add it under mounts in ~/.colima/default/colima.yaml)." >&2
+	if [ -z "$colima" ]; then
+		colima=no
+		case "$(docker context show 2>/dev/null)" in colima*) colima=yes ;; esac
+	fi
+	if [ "$colima" = yes ]; then
+		echo "dotboot: $path is outside your home, which Colima does not share by default" \
+			"(add it under mounts in ~/.colima/default/colima.yaml)." >&2
 	fi
 	docker_args+=(-v "$path:$path")
 	mounted+="$path"$'\n'
