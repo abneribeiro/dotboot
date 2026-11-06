@@ -33,6 +33,7 @@ archives:
     # install-deps.sh ships in the archive so install.sh can install yt-dlp,
     # deno and ffmpeg without the repository.
     files:
+      - LICENSE
       - README.md
       - .env.example
       - scripts/install-deps.sh

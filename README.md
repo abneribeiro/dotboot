@@ -34,6 +34,52 @@ Saved to ~/Videos
 
 ## Install
 
+dotboot needs [yt-dlp](https://github.com/yt-dlp/yt-dlp), FFmpeg and, for
+YouTube, [Deno](https://deno.com). Every option below can install them for you.
+
+### macOS and Linux (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abneribeiro/dotboot/main/scripts/install.sh | bash
+```
+
+The script downloads the latest release for your system, checks it against
+`checksums.txt`, installs `dotboot` into `~/.local/bin`, offers to install
+yt-dlp, Deno and FFmpeg, and finishes with `dotboot doctor`. Run it again to
+update. It takes a few variables:
+
+```bash
+# A specific version, another folder, and the dependencies without asking
+curl -fsSL https://raw.githubusercontent.com/abneribeiro/dotboot/main/scripts/install.sh |
+  DOTBOOT_VERSION=v0.1.0 BINDIR=/usr/local/bin DOTBOOT_DEPS=1 bash
+```
+
+If the command is not found afterwards, add the folder to your `PATH`:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
+```
+
+### With Go
+
+```bash
+go install github.com/abneribeiro/dotboot/cmd/dotboot@latest
+```
+
+This needs Go 1.26+ and puts the binary in `$(go env GOPATH)/bin`. Install the
+tools separately (`brew install yt-dlp ffmpeg deno` on macOS), then run
+`dotboot doctor`.
+
+### Windows
+
+Download `dotboot_<version>_windows_amd64.zip` (or `arm64`) from the
+[Releases](https://github.com/abneribeiro/dotboot/releases/latest) page and put
+`dotboot.exe` in a folder on your `PATH`. Install the tools with
+`winget install yt-dlp.yt-dlp Gyan.FFmpeg DenoLand.Deno`. Under WSL, use the
+macOS and Linux command instead.
+
+### From source, natively or with Docker
+
 ```bash
 git clone https://github.com/abneribeiro/dotboot
 cd dotboot
@@ -43,19 +89,14 @@ make setup
 `make setup` asks how to install, sets the output folder and runs
 `dotboot doctor`. There are two ways:
 
-| | Docker (recommended) | Native |
+| | Docker | Native |
 |---|---|---|
 | Command | `make docker-build && make install-docker` | `make deps && make install` |
 | Needs | Docker | Go 1.26+ (`make deps` installs yt-dlp, deno and ffmpeg) |
 | Size | ~1GB (mostly ffmpeg) | the binary plus yt-dlp, deno and ffmpeg |
 
 Both install the `dotboot` command into `~/.local/bin` (change it with
-`make install PREFIX=/usr/local`). If the command is not found, add that
-folder to your `PATH`:
-
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
-```
+`make install PREFIX=/usr/local`).
 
 With Docker, `dotboot` is a small script (`scripts/dotboot-docker`) that runs
 the `dotboot:latest` image as your user with your home mounted at the same
@@ -63,17 +104,10 @@ path, so files are yours and `~`, absolute paths and the settings work as
 with the native install. It also mounts the configured output folder and, on
 WSL, the Windows drives (`/mnt/c`…).
 
-**Other ways** (native binary only; install the dependencies with the
-`scripts/install-deps.sh` that ships in the archive):
+### Uninstall
 
-```bash
-# Latest GitHub release (while the repository is private, with gh logged in)
-gh api repos/abneribeiro/dotboot/contents/scripts/install.sh \
-  -H 'Accept: application/vnd.github.raw' | bash
-
-# go install (with a private repository: gh auth setup-git and GOPRIVATE)
-GOPRIVATE=github.com/abneribeiro/* go install github.com/abneribeiro/dotboot/cmd/dotboot@latest
-```
+Delete the binary (`rm ~/.local/bin/dotboot`, or `make uninstall`) and,
+optionally, the settings in `~/.config/dotboot`.
 
 ## Usage
 
@@ -205,4 +239,4 @@ Dependabot keeps Go, the base images and the actions up to date.
 
 ## License
 
-No license yet: provided as is, for personal and educational use.
+[MIT](LICENSE).

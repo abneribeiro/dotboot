@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Installs the latest dotboot release without cloning the repository.
+# Installs the latest dotboot release without cloning the repository:
 #
-# While the repository is private, through an authenticated gh (gh auth login):
-#   gh api repos/abneribeiro/dotboot/contents/scripts/install.sh \
-#     -H 'Accept: application/vnd.github.raw' | bash
-#
-# Once the repository is public:
 #   curl -fsSL https://raw.githubusercontent.com/abneribeiro/dotboot/main/scripts/install.sh | bash
+#
+# When gh is installed and logged in it is used instead of curl, which also
+# works while a fork or a copy of the repository is private.
 #
 # Variables: DOTBOOT_VERSION (tag, default the latest release), BINDIR
 # (default ~/.local/bin), DOTBOOT_DEPS=1 to install yt-dlp, deno and ffmpeg too.
@@ -73,7 +71,8 @@ fi
 tar -xzf "$tmp/$asset" -C "$tmp"
 mkdir -p "$BINDIR"
 install -m 0755 "$tmp/dotboot" "$BINDIR/dotboot"
-echo "✓ dotboot $("$BINDIR/dotboot" version) installed in $BINDIR"
+# "dotboot version" already starts with the name.
+echo "✓ $("$BINDIR/dotboot" version | sed 's/^ *dotboot *//') installed in $BINDIR"
 
 case ":$PATH:" in
 *":$BINDIR:"*) ;;
