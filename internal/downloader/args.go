@@ -2,7 +2,6 @@ package downloader
 
 import (
 	"fmt"
-	"io"
 	"strconv"
 )
 
@@ -78,12 +77,12 @@ type Options struct {
 
 	// Progress, when set, receives yt-dlp's progress and phase changes (see
 	// ParseLine); BuildArgs adds the --progress-template that produces them.
-	// Progress lines never reach Stdout.
+	// Progress lines never reach Log.
 	Progress func(Progress)
 
-	// Stdout and Stderr receive yt-dlp's output as it runs (may be nil).
-	Stdout io.Writer
-	Stderr io.Writer
+	// Log, when set, receives every other line yt-dlp prints, on stdout and
+	// stderr, as it runs.
+	Log func(line string)
 }
 
 // QualitySort turns a requested quality into yt-dlp's -S. "" or "best"

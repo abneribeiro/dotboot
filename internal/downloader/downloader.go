@@ -1,11 +1,10 @@
 // Package downloader runs yt-dlp and ffmpeg. It knows nothing about the
-// interface: progress goes out through callbacks and output through
-// io.Writers, and the caller decides how to show them.
+// interface: progress and output lines go out through callbacks, and the
+// caller decides how to show them.
 package downloader
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -20,9 +19,9 @@ import (
 // SIGINT (not SIGKILL) so yt-dlp finalizes its .part files: that is what
 // makes resuming (--continue) reliable after an interruption.
 //
-// Stdout is read line by line: with o.Progress set, progress lines and phase
-// changes (see ParseLine) go to the callback and the rest to o.Stdout.
-// Stderr goes to o.Stderr and to a tail used to classify the error.
+// Both outputs are read line by line: with o.Progress set, progress lines and
+// phase changes (see ParseLine) go to the callback, and every other line to
+// o.Log. Stderr also feeds a tail used to classify the error.
 func Run(ctx context.Context, o Options) error {
 	args := BuildArgs(o)
 	slog.Debug("running yt-dlp", "args", args)
@@ -31,11 +30,13 @@ func Run(ctx context.Context, o Options) error {
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 10 * time.Second
 
-	tail := &procio.TailBuffer{Max: 16 * 1024}
-	cmd.Stderr = tail
-	if o.Stderr != nil {
-		cmd.Stderr = io.MultiWriter(o.Stderr, tail)
+	logLine := func(string) {}
+	if o.Log != nil {
+		logLine = o.Log
 	}
+	tail := &procio.TailBuffer{Max: 16 * 1024}
+	stderr := procio.NewLineWriter(logLine)
+	cmd.Stderr = io.MultiWriter(stderr, tail)
 	stdout := procio.NewLineWriter(func(line string) {
 		if o.Progress != nil {
 			if p, ok := ParseLine(line); ok {
@@ -46,14 +47,13 @@ func Run(ctx context.Context, o Options) error {
 				}
 			}
 		}
-		if o.Stdout != nil {
-			fmt.Fprintln(o.Stdout, line)
-		}
+		logLine(line)
 	})
 	cmd.Stdout = stdout
 
 	err := cmd.Run()
 	stdout.Flush()
+	stderr.Flush()
 	if err != nil {
 		dlErr := classify(tail.String(), ctx.Err(), err)
 		if dlErr.Kind != ErrCanceled {

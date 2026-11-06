@@ -13,8 +13,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/abneribeiro/dotboot/internal/config"
 	"github.com/abneribeiro/dotboot/internal/downloader"
-	"github.com/abneribeiro/dotboot/internal/procio"
 )
 
 const (
@@ -160,12 +160,9 @@ func NewDownload(in DownloadInput, outputBase string) (*Download, error) {
 // path ignores it. Without a base, a relative -o is relative to the current
 // folder and no -o means the current folder. A leading "~" is expanded.
 func ResolveOutputDir(dir, base string) (string, error) {
-	if dir == "~" || strings.HasPrefix(dir, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		dir = filepath.Join(home, strings.TrimPrefix(dir, "~"))
+	dir, err := config.ExpandHome(dir, os.Getenv)
+	if err != nil {
+		return "", err
 	}
 	if dir == "" {
 		dir = base
@@ -287,8 +284,6 @@ func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, e
 		cookies = env.CookiesFile
 	}
 
-	stderr := procio.NewLineWriter(sink.log)
-	defer stderr.Flush()
 	opts := downloader.Options{
 		URLs:           d.URLs,
 		BatchFile:      d.BatchFile,
@@ -299,8 +294,7 @@ func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, e
 		CookiesFile:    cookies,
 		JSRuntimes:     env.JSRuntimes,
 		Progress:       sink.progress,
-		Stdout:         writerFunc(sink.log),
-		Stderr:         stderr,
+		Log:            sink.log,
 	}
 
 	archive := archiveFileName
@@ -379,15 +373,6 @@ func (d *Download) Run(ctx context.Context, env Env, report Reporter) (Result, e
 	return res, convErr
 }
 
-// writerFunc adapts a line function to io.Writer (the downloader already
-// hands stdout over line by line).
-type writerFunc func(string)
-
-func (f writerFunc) Write(p []byte) (int, error) {
-	f(strings.TrimRight(string(p), "\n"))
-	return len(p), nil
-}
-
 // ensurePlayable converts the files listed in pathFile to MP4/H.264/AAC and
 // returns the final paths, plus the files that needed a re-encode mapped to
 // their source codec. It is the second layer of the guarantee: -S asks for
@@ -462,7 +447,7 @@ func printedPaths(pathFile string) []string {
 
 	var paths []string
 	seen := make(map[string]bool)
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || seen[line] {
 			continue
