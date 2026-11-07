@@ -1,8 +1,10 @@
-# dotboot
+<div align="center">
+  <br />
+  <h3><b>dotboot</b></h3>
+  <p>download videos and music in a format every phone and computer plays, on top of yt-dlp and ffmpeg.</p>
+</div>
 
-Download videos and music from YouTube, Instagram, X, TikTok, SoundCloud and
-[every site yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md),
-in a format that plays on iPhone, Android, Windows, macOS and WhatsApp.
+<br />
 
 ```
 $ dotboot video -q 1080 https://youtu.be/xxxx
@@ -15,154 +17,59 @@ $ dotboot video -q 1080 https://youtu.be/xxxx
 Saved to ~/Videos
 ```
 
-- **MP4 with H.264 + AAC** by default, converted when a site only has VP9/AV1.
-- **MP3 or M4A** with title, artist and cover art.
-- **Playlists, batch files and trims**, best quality or a maximum resolution.
-- **Resumable**: run the same command again to skip what is done and resume
-  what was interrupted.
+## **overview**
 
-## Install
+-   downloads from youtube, instagram, x, tiktok, soundcloud and [every site yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
+-   video is always mp4 with h.264 + aac, converted only when a site has nothing but vp9/av1, so it plays on iphone, android, windows, macos and whatsapp
+-   audio as mp3 or m4a with title, artist and cover art
+-   playlists, batch files and trims; resumable, so the same command again skips what is done and resumes what was interrupted
+-   stack: `go 1.26+`, `bubble tea v2`, `lip gloss v2`, `yt-dlp`, `ffmpeg`, `deno`, `docker`
 
-### macOS and Linux
+## **design & trade-offs**
+
+-   **strict layers:** `cli` parses and decides exit codes, `ui` draws, `jobs` orchestrates, `downloader` runs the tools. `jobs` and `downloader` never write to the terminal; progress reaches the ui as `jobs.Event` values.
+-   **resolution before codec:** the format sort is `res,hdr:sdr,vcodec:h264,acodec:aac`. resolution has to outrank the codec, or a 2160 cap is ignored, and sdr is preferred because hdr squeezed into 8-bit h.264 looks washed out.
+-   **quality means the short side:** `-q 720` is a cap with fallback (`-S res:720`), never a height filter, which turned a vertical 720x1280 short into 360x640.
+-   **interruptions are safe:** ctrl+c sends `os.Interrupt` to yt-dlp/ffmpeg, so `.part` files survive and a rerun resumes. pending conversions are written to `.dotboot-pending.txt`, so an interrupted conversion never leaves a stray `.webm`.
+-   **why 1080p is the sweet spot:** up to 1080p youtube serves h.264, so the mp4 needs no conversion. above it only vp9/av1 exist, and converting them takes a while.
+
+## **quickstart**
+
+macos and linux (latest release, checksum verified, offers to install yt-dlp, ffmpeg and deno):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/abneribeiro/dotboot/main/scripts/install.sh | bash
+dotboot doctor
+dotboot video "https://youtube.com/watch?v=xxxx"
+dotboot audio -f m4a "https://youtube.com/watch?v=xxxx"
 ```
 
-Installs the latest release into `~/.local/bin` (checksum verified), offers to
-install yt-dlp, FFmpeg and Deno, and runs `dotboot doctor`. Run it again to
-update. Options, set before `bash`: `DOTBOOT_VERSION=v0.1.0`,
-`BINDIR=/usr/local/bin`, `DOTBOOT_DEPS=1` (dependencies without asking).
-
-If `dotboot` is not found, add `~/.local/bin` to your `PATH`:
-
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
-```
-
-### Go
+or with go:
 
 ```bash
 go install github.com/abneribeiro/dotboot/cmd/dotboot@latest
-brew install yt-dlp ffmpeg deno   # or your package manager
 ```
 
-### Windows
+windows, docker and building from source are in [install](docs/install.md).
 
-Download the `.zip` for your architecture from
-[Releases](https://github.com/abneribeiro/dotboot/releases/latest), put
-`dotboot.exe` on your `PATH`, and install the tools:
-
-```powershell
-winget install yt-dlp.yt-dlp Gyan.FFmpeg DenoLand.Deno
-```
-
-### Docker (nothing else on your machine)
-
-The image brings yt-dlp, FFmpeg and Deno; `dotboot` becomes a small script
-that runs it as your user, with your home mounted at the same path.
+## **testing**
 
 ```bash
-# macOS: OrbStack, the lightest Docker engine (free for personal use)
-brew install --cask orbstack && open -a OrbStack
-# Linux and WSL: Docker Engine (https://docs.docker.com/engine/install/)
-
-git clone https://github.com/abneribeiro/dotboot && cd dotboot
-make docker-build && make install-docker
-```
-
-The image takes about 1 GB. For an open-source engine on macOS, use Colima
-instead (`brew install colima docker docker-buildx && colima start`); it only
-shares your home, so save downloads inside it (e.g. `-o ~/Videos`).
-
-### From source
-
-```bash
-git clone https://github.com/abneribeiro/dotboot && cd dotboot
-make setup   # native (Go 1.26+) or Docker, then the output folder
-```
-
-**Uninstall**: `rm ~/.local/bin/dotboot`, and optionally `~/.config/dotboot`
-(and `docker rmi dotboot:latest` for Docker).
-
-## Usage
-
-```
-dotboot video [flags] <url>...    Download videos as MP4
-dotboot audio [flags] <url>...    Download audio as MP3 or M4A
-dotboot doctor                    Check yt-dlp, FFmpeg and Deno
-dotboot config [key] [value]      Show or change the settings
-dotboot help <command>            Show a command's flags
-dotboot <url>                     Same as dotboot video <url>
-```
-
-```bash
-dotboot video "https://youtube.com/watch?v=xxxx"                     # best quality
-dotboot video -q 720 -o lessons "https://youtube.com/playlist?list=yyyy"
-dotboot video --start 01:30 --end 02:00 https://x.com/user/status/123
-dotboot audio -f m4a "https://youtube.com/watch?v=xxxx"
-dotboot video -a urls.txt                                            # one URL per line
-```
-
-| Flag | Meaning |
-|---|---|
-| `-q, --quality <res>` | `best` (default) or a maximum short side: `2160`, `1080`, `720`… |
-| `-o, --output <dir>` | Output folder; a relative one goes inside the configured folder |
-| `--original` | Keep the site's format (`.webm`/`.mkv`) instead of MP4 |
-| `--start`, `--end <time>` | Trim, `MM:SS` or `HH:MM:SS`, one URL only |
-| `-a, --batch <file>` | Read URLs from a file |
-| `--cookies <file>` | Netscape cookies for logins and bot checks |
-| `-f, --format mp3\|m4a` | Audio only; default `mp3` |
-
-Flags can go before or after the URLs. In zsh, quote URLs that contain `?`.
-
-**Why 1080p is the sweet spot**: up to 1080p YouTube serves H.264, so the MP4
-needs no conversion. Above it only VP9/AV1 exist, and dotboot converts them,
-which takes a while.
-
-## Settings
-
-```bash
-dotboot config output ~/Videos         # default output folder
-dotboot config cookies ~/cookies.txt   # cookies for every download
-dotboot config cookies ""              # clear a setting
-```
-
-Stored in `~/.config/dotboot/config.env`. Environment variables, and a `.env`
-in the current folder, take priority:
-
-| Variable | Meaning | Default |
-|---|---|---|
-| `DOTBOOT_OUTPUT_DIR` | Output folder, and the root of a relative `-o` | current folder |
-| `DOTBOOT_COOKIES_FILE` | Netscape cookies file | none |
-| `DOTBOOT_TEMP_DIR` | Temporary files | the system's |
-| `DOTBOOT_JS_RUNTIMES` | yt-dlp's JavaScript runtime, e.g. `node` | deno, else node |
-| `DOTBOOT_LOG_LEVEL` | `debug`, `info`, `warn`, `error` | `info` |
-
-## Troubleshooting
-
-Run `dotboot doctor` first: it lists what is missing or outdated and how to
-fix it.
-
-- **"Sign in to confirm you're not a bot"**: export your browser's cookies
-  (e.g. the "Get cookies.txt LOCALLY" extension) and run
-  `dotboot config cookies <file>`.
-- **A site stopped working**: update yt-dlp (`yt-dlp -U`, or rerun the
-  installer with `DOTBOOT_DEPS=1`).
-- **`dotboot: command not found`**: add `~/.local/bin` to your `PATH`.
-
-## Development
-
-```bash
+make check                    # gofmt, vet and tests with -race, as ci
+make test-integration-docker  # real downloads inside the docker image
 make run ARGS="video <url>"   # run from source
-make check                    # gofmt, vet and tests with -race, as CI
-make test-integration-docker  # real downloads inside the Docker image
-make release VERSION=vX.Y.Z   # tag a release; GitHub Actions publishes it
 ```
 
-`make` lists every target. Architecture and conventions are in
-[AGENTS.md](AGENTS.md).
+`make` lists every target. releases are tagged with `make release VERSION=vX.Y.Z` and published by github actions.
 
-## License
+## **docs**
 
-[MIT](LICENSE)
+-   [install](docs/install.md): every platform, docker, from source, uninstall
+-   [usage](docs/usage.md): commands, flags and examples
+-   [settings](docs/settings.md): `dotboot config` and environment variables
+-   [troubleshooting](docs/troubleshooting.md): bot checks, broken sites, `PATH`
+-   [AGENTS.md](AGENTS.md): architecture, invariants and code conventions
+
+## **license**
+
+-   [mit](LICENSE)
