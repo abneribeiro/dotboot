@@ -17,18 +17,18 @@ dotboot audio -f m4a "https://youtube.com/watch?v=xxxx"
 dotboot video -a urls.txt                                            # one URL per line
 ```
 
-| Flag | Meaning |
+| flag | meaning |
 |---|---|
 | `-q, --quality <res>` | `best` (default) or a maximum short side: `2160`, `1080`, `720`… |
-| `-o, --output <dir>` | Output folder; a relative one goes inside the configured folder |
-| `--original` | Keep the site's format (`.webm`/`.mkv`) instead of MP4 |
-| `--start`, `--end <time>` | Trim, `MM:SS` or `HH:MM:SS`, one URL only |
-| `-a, --batch <file>` | Read URLs from a file |
-| `--cookies <file>` | Netscape cookies for logins and bot checks |
-| `-f, --format mp3\|m4a` | Audio only; default `mp3` |
+| `-o, --output <dir>` | output folder; a relative one goes inside the configured folder |
+| `--original` | keep the site's format (`.webm`/`.mkv`) instead of mp4 |
+| `--start`, `--end <time>` | trim, `MM:SS` or `HH:MM:SS`, one url only |
+| `-a, --batch <file>` | read urls from a file |
+| `--cookies <file>` | netscape cookies for logins and bot checks |
+| `-f, --format mp3\|m4a` | audio only; default `mp3` |
 
-Flags can go before or after the URLs. In zsh, quote URLs that contain `?`.
+flags can go before or after the urls. in zsh, quote urls that contain `?`.
 
-**Why 1080p is the sweet spot**: up to 1080p YouTube serves H.264, so the MP4
-needs no conversion. Above it only VP9/AV1 exist, and dotboot converts them,
+**why 1080p is the sweet spot**: up to 1080p youtube serves h.264, so the mp4
+needs no conversion. above it only vp9/av1 exist, and dotboot converts them,
 which takes a while.

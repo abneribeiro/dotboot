@@ -6,12 +6,12 @@
 curl -fsSL https://raw.githubusercontent.com/abneribeiro/dotboot/main/scripts/install.sh | bash
 ```
 
-Installs the latest release into `~/.local/bin` (checksum verified), offers to
-install yt-dlp, FFmpeg and Deno, and runs `dotboot doctor`. Run it again to
-update. Options, set before `bash`: `DOTBOOT_VERSION=v0.1.0`,
+installs the latest release into `~/.local/bin` (checksum verified), offers to
+install yt-dlp, ffmpeg and deno, and runs `dotboot doctor`. run it again to
+update. options, set before `bash`: `DOTBOOT_VERSION=v0.1.0`,
 `BINDIR=/usr/local/bin`, `DOTBOOT_DEPS=1` (dependencies without asking).
 
-If `dotboot` is not found, add `~/.local/bin` to your `PATH`:
+if `dotboot` is not found, add `~/.local/bin` to your `PATH`:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
@@ -26,8 +26,8 @@ brew install yt-dlp ffmpeg deno   # or your package manager
 
 ## **windows**
 
-Download the `.zip` for your architecture from
-[Releases](https://github.com/abneribeiro/dotboot/releases/latest), put
+download the `.zip` for your architecture from
+[releases](https://github.com/abneribeiro/dotboot/releases/latest), put
 `dotboot.exe` on your `PATH`, and install the tools:
 
 ```powershell
@@ -36,7 +36,7 @@ winget install yt-dlp.yt-dlp Gyan.FFmpeg DenoLand.Deno
 
 ## **docker (nothing else on your machine)**
 
-The image brings yt-dlp, FFmpeg and Deno; `dotboot` becomes a small script
+the image brings yt-dlp, ffmpeg and deno; `dotboot` becomes a small script
 that runs it as your user, with your home mounted at the same path.
 
 ```bash
@@ -48,7 +48,7 @@ git clone https://github.com/abneribeiro/dotboot && cd dotboot
 make docker-build && make install-docker
 ```
 
-The image takes about 1 GB. For an open-source engine on macOS, use Colima
+the image takes about 1 gb. for an open-source engine on macos, use colima
 instead (`brew install colima docker docker-buildx && colima start`); it only
 shares your home, so save downloads inside it (e.g. `-o ~/Videos`).
 
@@ -59,5 +59,5 @@ git clone https://github.com/abneribeiro/dotboot && cd dotboot
 make setup   # native (Go 1.26+) or Docker, then the output folder
 ```
 
-**Uninstall**: `rm ~/.local/bin/dotboot`, and optionally `~/.config/dotboot`
-(and `docker rmi dotboot:latest` for Docker).
+**uninstall**: `rm ~/.local/bin/dotboot`, and optionally `~/.config/dotboot`
+(and `docker rmi dotboot:latest` for docker).
